@@ -605,16 +605,16 @@ endif
 	  $(MKDIR_P) '$(DESTDIR)$(libdir)/infer/infer/bin/'
 # copy files
 ifeq ($(BUILD_C_ANALYZERS),yes)
-	$(INSTALL_DATA) -C          'facebook-clang-plugins/libtooling/build/FacebookClangPlugin.dylib' \
+	$(INSTALL_DATA) -c          'facebook-clang-plugins/libtooling/build/FacebookClangPlugin.dylib' \
 	  '$(DESTDIR)$(libdir)/infer/facebook-clang-plugins/libtooling/build/FacebookClangPlugin.dylib'
 #	do not use "install" for symbolic links as this will copy the destination file instead
 	find facebook-clang-plugins/clang/install/. -not -type d -not -type l -not -name '*.a' -print0 \
-	  | xargs -0 -I \{\} $(INSTALL_PROGRAM) -C \{\} '$(DESTDIR)$(libdir)'/infer/\{\}
+	  | xargs -0 -I \{\} $(INSTALL_PROGRAM) -c \{\} '$(DESTDIR)$(libdir)'/infer/\{\}
 #	all the symlinks in clang are relative and safe to brutally copy over
 	find facebook-clang-plugins/clang/install/. -type l -not -name '*.a' -print0 \
 	  | xargs -0 -I \{\} $(COPY) -a \{\} '$(DESTDIR)$(libdir)'/infer/\{\}
 	find infer/lib/clang_wrappers/* -print0 | xargs -0 -I \{\} \
-	  $(INSTALL_PROGRAM) -C \{\} '$(DESTDIR)$(libdir)'/infer/\{\}
+	  $(INSTALL_PROGRAM) -c \{\} '$(DESTDIR)$(libdir)'/infer/\{\}
 #	only for files that point to infer
 	(cd '$(DESTDIR)$(libdir)/infer/infer/lib/wrappers/' && \
 	 $(foreach cc,$(shell find '$(LIB_DIR)/wrappers' -type l), \
@@ -622,31 +622,31 @@ ifeq ($(BUILD_C_ANALYZERS),yes)
 	  $(REMOVE) '$(notdir $(cc))' && \
 	  $(LN_S) ../../bin/infer '$(notdir $(cc))';))
 	find infer/lib/specs/* -print0 | xargs -0 -I \{\} \
-	  $(INSTALL_DATA) -C \{\} '$(DESTDIR)$(libdir)'/infer/\{\}
+	  $(INSTALL_DATA) -c \{\} '$(DESTDIR)$(libdir)'/infer/\{\}
 	find infer/models/cpp/include -not -type d -print0 | xargs -0 -I \{\} \
-		$(INSTALL_DATA) -C \{\} '$(DESTDIR)$(libdir)'/infer/\{\}
-	$(INSTALL_DATA) -C          'infer/lib/linter_rules/linters.al' \
+		$(INSTALL_DATA) -c \{\} '$(DESTDIR)$(libdir)'/infer/\{\}
+	$(INSTALL_DATA) -c          'infer/lib/linter_rules/linters.al' \
 	  '$(DESTDIR)$(libdir)/infer/infer/lib/linter_rules/linters.al'
-	$(INSTALL_DATA) -C          'infer/etc/clang_ast.dict' \
+	$(INSTALL_DATA) -c          'infer/etc/clang_ast.dict' \
 	  '$(DESTDIR)$(libdir)/infer/infer/etc/clang_ast.dict'
 endif
 ifeq ($(BUILD_JAVA_ANALYZERS),yes)
-	$(INSTALL_DATA) -C          'infer/annotations/annotations.jar' \
+	$(INSTALL_DATA) -c          'infer/annotations/annotations.jar' \
 	  '$(DESTDIR)$(libdir)/infer/infer/annotations/annotations.jar'
 	find infer/lib/java/*.jar -print0 | xargs -0 -I \{\} \
-	  $(INSTALL_DATA) -C \{\} '$(DESTDIR)$(libdir)'/infer/\{\}
-	$(INSTALL_PROGRAM) -C      '$(LIB_DIR)'/wrappers/javac \
+	  $(INSTALL_DATA) -c \{\} '$(DESTDIR)$(libdir)'/infer/\{\}
+	$(INSTALL_PROGRAM) -c      '$(LIB_DIR)'/wrappers/javac \
 	  '$(DESTDIR)$(libdir)'/infer/infer/lib/wrappers/
 endif
 	find infer/lib/python/inferlib/* -type f -print0 | xargs -0 -I \{\} \
-	  $(INSTALL_DATA) -C \{\} '$(DESTDIR)$(libdir)'/infer/\{\}
-	$(INSTALL_PROGRAM) -C       infer/lib/python/infer.py \
+	  $(INSTALL_DATA) -c \{\} '$(DESTDIR)$(libdir)'/infer/\{\}
+	$(INSTALL_PROGRAM) -c       infer/lib/python/infer.py \
 	  '$(DESTDIR)$(libdir)'/infer/infer/lib/python/infer.py
-	$(INSTALL_PROGRAM) -C       infer/lib/python/inferTraceBugs \
+	$(INSTALL_PROGRAM) -c       infer/lib/python/inferTraceBugs \
 	  '$(DESTDIR)$(libdir)'/infer/infer/lib/python/inferTraceBugs
-	$(INSTALL_PROGRAM) -C       infer/lib/python/report.py \
+	$(INSTALL_PROGRAM) -c       infer/lib/python/report.py \
 	  '$(DESTDIR)$(libdir)'/infer/infer/lib/python/report.py
-	$(INSTALL_PROGRAM) -C '$(INFER_BIN)' '$(DESTDIR)$(libdir)'/infer/infer/bin/
+	$(INSTALL_PROGRAM) -c '$(INFER_BIN)' '$(DESTDIR)$(libdir)'/infer/infer/bin/
 	(cd '$(DESTDIR)$(bindir)/' && \
 	 $(REMOVE) infer && \
 	 $(LN_S) '$(libdir_relative_to_bindir)'/infer/infer/bin/infer infer)
@@ -659,7 +659,7 @@ endif
 	   $(REMOVE) "$$alias" && \
 	   $(LN_S) infer "$$alias"); done
 	$(foreach man,$(INFER_GROFF_MANUALS_GZIPPED), \
-	  $(INSTALL_DATA) -C $(man) '$(DESTDIR)$(mandir)/man1/$(notdir $(man))';)
+	  $(INSTALL_DATA) -c $(man) '$(DESTDIR)$(mandir)/man1/$(notdir $(man))';)
 ifeq ($(IS_FACEBOOK_TREE),yes)
 ifdef DESTDIR
 ifeq (,$(findstring :/,:$(DESTDIR)))
@@ -685,8 +685,8 @@ ifneq ($(OPAM),no)
 	OPAM_SHARE=$$($(OPAM) config var share); \
 	APRON_LIB_PATHS="$$OPAM_SHARE/apron/lib/libapron.so $$OPAM_SHARE/apron/lib/liboctMPQ.so"; \
 	ELINA_LIB_PATHS="$$OPAM_SHARE/elina/lib/libelinalinearize.so $$OPAM_SHARE/elina/lib/liboptpoly.so $$OPAM_SHARE/elina/lib/libpartitions.so"; \
-	$(INSTALL_PROGRAM) -C $$APRON_LIB_PATHS '$(DESTDIR)$(libdir)'/infer/infer/libso/; \
-	$(INSTALL_PROGRAM) -C $$ELINA_LIB_PATHS '$(DESTDIR)$(libdir)'/infer/infer/libso/
+	$(INSTALL_PROGRAM) -c $$APRON_LIB_PATHS '$(DESTDIR)$(libdir)'/infer/infer/libso/; \
+	$(INSTALL_PROGRAM) -c $$ELINA_LIB_PATHS '$(DESTDIR)$(libdir)'/infer/infer/libso/
 ifneq ($(LDD),no)
 ifneq ($(PATCHELF),no)
 #	this sort of assumes Linux
@@ -695,7 +695,7 @@ ifneq ($(PATCHELF),no)
 	for lib in $$($(LDD) $(INFER_BIN) \
 	              | cut -d ' ' -f 3 \
 	              | grep -e 'lib\(gmp\|mpfr\)'); do \
-	  $(INSTALL_PROGRAM) -C "$$lib" '$(DESTDIR)$(libdir)'/infer/infer/libso/; \
+	  $(INSTALL_PROGRAM) -c "$$lib" '$(DESTDIR)$(libdir)'/infer/infer/libso/; \
 	done
 #	update rpath of executables
 	for sofile in '$(DESTDIR)$(libdir)'/infer/infer/libso/*.so; do \
@@ -718,7 +718,7 @@ ifneq ($(INSTALL_NAME_TOOL),no)
 	for lib in $$($(OTOOL) -L $(INFER_BIN) \
 	              | cut -d ' ' -f 1 | tr -d '\t' \
 	              | grep -e 'lib\(gmp\|mpfr\)'); do \
-	  $(INSTALL_PROGRAM) -C "$$lib" '$(DESTDIR)$(libdir)'/infer/infer/libso/; \
+	  $(INSTALL_PROGRAM) -c "$$lib" '$(DESTDIR)$(libdir)'/infer/infer/libso/; \
 	done
 	set -x; \
 	for sofile in '$(DESTDIR)$(libdir)'/infer/infer/libso/*.{so,dylib}; do \
