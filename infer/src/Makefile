@@ -252,7 +252,7 @@ $(CLANG_BINIOU_DICT): $(CLANG_ATDGEN_STUB_ATD)
 	  > $@
 
 $(GENERATED_FROM_AUTOCONF): $(MAKEFILE_LIST)
-	TMPFILE=$$(mktemp $@.tmp.XXXX); \
+	TMPFILE=$$(mktemp $@.tmp.XXXXXX); \
 	INFER_GIT_COMMIT=$$(git --work-tree=$(ROOT_DIR) --git-dir=$(ROOT_DIR)/.git rev-parse --short HEAD || printf "unknown"); \
 	INFER_GIT_BRANCH=$$(git --work-tree=$(ROOT_DIR) --git-dir=$(ROOT_DIR)/.git rev-parse --abbrev-ref HEAD || printf "unknown"); \
 	sed \
