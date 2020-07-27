@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -24,9 +24,16 @@ module Node : sig
   type t [@@deriving compare]
 
   (** node id *)
-  type id = private int [@@deriving compare]
+  type id = private int [@@deriving compare, equal]
 
-  val equal_id : id -> id -> bool
+  type destruction_kind =
+    | DestrBreakStmt
+    | DestrContinueStmt
+    | DestrFields
+    | DestrReturnStmt
+    | DestrScope
+    | DestrTemporariesCleanup
+    | DestrVirtualBase
 
   (** kind of statement node *)
   type stmt_nodekind =
@@ -45,9 +52,10 @@ module Node : sig
     | CXXTypeidExpr
     | DeclStmt
     | DefineBody
-    | Destruction
+    | Destruction of destruction_kind
     | ExceptionHandler
     | ExceptionsSink
+    | ExprWithCleanups
     | FallbackNode
     | FinallyBranch
     | GCCAsmStmt
@@ -62,6 +70,7 @@ module Node : sig
     | ObjCCPPThrow
     | OutOfBound
     | ReturnStmt
+    | Scope of string
     | Skip of string
     | SwitchStmt
     | ThisNotNull
@@ -106,7 +115,7 @@ module Node : sig
   val d_instrs : highlight:Sil.instr option -> t -> unit
   (** Dump instructions for the node, highlighting the given subinstruction if present *)
 
-  val dummy : Typ.Procname.t -> t
+  val dummy : Procname.t -> t
   (** Create a dummy node *)
 
   val equal : t -> t -> bool
@@ -145,13 +154,16 @@ module Node : sig
   val get_siblings : t -> t Sequence.t
   (** Get siblings of the current node *)
 
-  val get_proc_name : t -> Typ.Procname.t
+  val get_proc_name : t -> Procname.t
   (** Get the name of the procedure the node belongs to *)
 
   val get_succs : t -> t list
   (** Get the successor nodes of the current node *)
 
   val get_wto_index : t -> int
+
+  val is_dangling : t -> bool
+  (** Returns true if the node is dangling, i.e. no successors and predecessors *)
 
   val hash : t -> int
   (** Hash function for nodes *)
@@ -191,14 +203,11 @@ val compute_distance_to_exit_node : t -> unit
 (** Compute the distance of each node to the exit node, if not computed already *)
 
 val create_node : t -> Location.t -> Node.nodekind -> Sil.instr list -> Node.t
-(** Create a new cfg node with the given location, kind, list of instructions,
-    and add it to the procdesc. *)
+(** Create a new cfg node with the given location, kind, list of instructions, and add it to the
+    procdesc. *)
 
 val create_node_from_not_reversed :
   t -> Location.t -> Node.nodekind -> Instrs.not_reversed_t -> Node.t
-
-val did_preanalysis : t -> bool
-(** true if we ran the preanalysis on the CFG associated with [t] *)
 
 val fold_instrs : t -> init:'accum -> f:('accum -> Node.t -> Sil.instr -> 'accum) -> 'accum
 (** fold over all nodes and their instructions *)
@@ -216,7 +225,7 @@ val get_attributes : t -> ProcAttributes.t
 
 val set_attributes : t -> ProcAttributes.t -> unit
 
-val get_captured : t -> (Mangled.t * Typ.t) list
+val get_captured : t -> (Mangled.t * Typ.t * Pvar.capture_mode) list
 (** Return name and type of block's captured variables *)
 
 val get_exit_node : t -> Node.t
@@ -235,9 +244,7 @@ val get_locals : t -> ProcAttributes.var_data list
 
 val get_nodes : t -> Node.t list
 
-val get_nodes_num : t -> int
-
-val get_proc_name : t -> Typ.Procname.t
+val get_proc_name : t -> Procname.t
 
 val get_ret_type : t -> Typ.t
 (** Return the return type of the procedure and type string *)
@@ -247,6 +254,9 @@ val has_added_return_param : t -> bool
 val get_ret_var : t -> Pvar.t
 
 val get_start_node : t -> Node.t
+
+val get_static_callees : t -> Procname.t list
+(** get a list of unique static callees excluding self *)
 
 val is_defined : t -> bool
 (** Return [true] iff the procedure is defined, and not just declared *)
@@ -258,8 +268,21 @@ val iter_instrs : (Node.t -> Sil.instr -> unit) -> t -> unit
 (** iterate over all nodes and their instructions *)
 
 val replace_instrs : t -> f:(Node.t -> Sil.instr -> Sil.instr) -> bool
-(** Map and replace the instructions to be executed.
-    Returns true if at least one substitution occured. *)
+(** Map and replace the instructions to be executed. Returns true if at least one substitution
+    occured. *)
+
+val replace_instrs_using_context :
+     t
+  -> f:(Node.t -> 'a -> Sil.instr -> Sil.instr)
+  -> update_context:('a -> Sil.instr -> 'a)
+  -> context_at_node:(Node.t -> 'a)
+  -> bool
+(** Map and replace the instructions to be executed using a context that we built with previous
+    instructions in the node. Returns true if at least one substitution occured. *)
+
+val replace_instrs_by : t -> f:(Node.t -> Sil.instr -> Sil.instr array) -> bool
+(** Like [replace_instrs], but slower, and each instruction may be replaced by 0, 1, or more
+    instructions. *)
 
 val iter_nodes : (Node.t -> unit) -> t -> unit
 (** iterate over all the nodes of a procedure *)
@@ -270,18 +293,16 @@ val fold_nodes : t -> init:'accum -> f:('accum -> Node.t -> 'accum) -> 'accum
 val fold_slope_range : Node.t -> Node.t -> init:'accum -> f:('accum -> Node.t -> 'accum) -> 'accum
 (** fold between two nodes or until we reach a branching structure *)
 
-val set_succs_exn_only : Node.t -> Node.t list -> unit
+val set_succs : Node.t -> normal:Node.t list option -> exn:Node.t list option -> unit
+(** Set the successor nodes and exception nodes, if given, and update predecessor links *)
 
-val node_set_succs_exn : t -> Node.t -> Node.t list -> Node.t list -> unit
-(** Set the successor nodes and exception nodes, and build predecessor links *)
+val node_set_succs : t -> Node.t -> normal:Node.t list -> exn:Node.t list -> unit
+(** Set the successor nodes and exception nodes, and update predecessor links *)
 
 val set_exit_node : t -> Node.t -> unit
 (** Set the exit node of the procedure *)
 
 val set_start_node : t -> Node.t -> unit
-
-val signal_did_preanalysis : t -> unit
-(** indicate that we have performed preanalysis on the CFG associated with [t] *)
 
 val get_wto : t -> Node.t WeakTopologicalOrder.Partition.t
 
@@ -301,11 +322,8 @@ val is_captured_var : t -> Var.t -> bool
 
 val has_modify_in_block_attr : t -> Pvar.t -> bool
 
-val is_connected : t -> (unit, [`Join | `Other]) Result.t
-(** checks whether a cfg for the given procdesc is connected or not *)
-
 (** per-procedure CFGs are stored in the SQLite "procedures" table as NULL if the procedure has no
-   CFG *)
+    CFG *)
 module SQLite : SqliteUtils.Data with type t = t option
 
-val load : Typ.Procname.t -> t option
+val load : Procname.t -> t option

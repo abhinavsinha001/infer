@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2019-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -27,28 +27,41 @@
   open! Caml
 }
 
-let id_head = ['a'-'z' 'A'-'Z']
 let id_tail = ['a'-'z' 'A'-'Z' '0'-'9']*
+let integer = ['0' - '9']+
 
 rule raw_token = parse
   | '\t' { raise Error }
   | ((' '* ("//" [^ '\n']*)? '\n')+ as x) (' '* as y) { new_line x y lexbuf }
   | ' '+ { raw_token lexbuf }
   | "->" { ARROW }
-  | '='  { ASGN }
+  | "=>" { ARROWARROW }
   | ':'  { COLON }
+  | ":=" { COLONEQ }
+  | ';'  { SEMI }
   | ','  { COMMA }
   | '('  { LP }
   | ')'  { RP }
   | '*'  { STAR }
-  | '<'  (([^ '<' '>' '\n' '\\'] | ('\\' _))* as x) '>' { CONSTANT (unquote x) }
-  | '"' ([^ '"' '\n']* as x) '"' { STRING x }
+  | '"'  (([^ '"' '\n' '\\'] | ('\\' _))* as x) '"' { STRING (unquote x) }
+  | integer as x { INTEGER (int_of_string x) }
+  | '<'  { LT }
+  | '>'  { GT }
+  | "<=" { LE }
+  | ">=" { GE }
+  | "==" { EQ }
+  | "!=" { NE }
+  | "&&" { AND }
   | "prefix" { PREFIX }
   | "property" { PROPERTY }
   | "message" { MESSAGE }
-  | id_head id_tail as id { ID id }
+  | "nondet" { NONDET }
+  | "when" { WHEN }
+  | ['a'-'z'] id_tail as id { LID id }
+  | ['A'-'Z'] id_tail as id { UID id }
   | eof { EOF }
   | _ { raise Error }
+
 
 {
   let token () =

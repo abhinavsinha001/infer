@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -19,42 +19,42 @@ type t =
   | Dsizeof of Typ.t * t option * Subtype.t
   | Dderef of t
   | Dfcall of t * t list * Location.t * CallFlags.t
-  | Darrow of t * Typ.Fieldname.t
-  | Ddot of t * Typ.Fieldname.t
+  | Darrow of t * Fieldname.t
+  | Ddot of t * Fieldname.t
   | Dpvar of Pvar.t
   | Dpvaraddr of Pvar.t
   | Dunop of Unop.t * t
   | Dunknown
   | Dretcall of t * t list * Location.t * CallFlags.t
 
-(** Value paths: identify an occurrence of a value in a symbolic heap
-    each expression represents a path, with Dpvar being the simplest one *)
+(** Value paths: identify an occurrence of a value in a symbolic heap each expression represents a
+    path, with Dpvar being the simplest one *)
 type vpath = t option
 
-let eradicate_java () = Config.eradicate && Language.curr_language_is Java
+let eradicate_java () = Config.is_checker_enabled Eradicate && Language.curr_language_is Java
 
 let split_var_clang var_name =
   match String.rsplit2 ~on:'.' var_name with Some (_, name) -> name | _ -> var_name
 
 
 let builtin_functions_to_string pn =
-  if Typ.Procname.equal pn BuiltinDecl.__objc_alloc_no_fail then Some "alloc" else None
+  if Procname.equal pn BuiltinDecl.__objc_alloc_no_fail then Some "alloc" else None
 
 
 let rec pp fmt = function
   | Darray (de1, de2) ->
       F.fprintf fmt "%a[%a]" pp de1 pp de2
   | Dbinop (op, de1, de2) ->
-      F.fprintf fmt "(%a%a%a)" pp de1 (Pp.to_string ~f:(Binop.str Pp.text)) op pp de2
+      F.fprintf fmt "(%a%a%a)" pp de1 (Pp.of_string ~f:(Binop.str Pp.text)) op pp de2
   | Dconst (Cfun pn) -> (
     match builtin_functions_to_string pn with
     | Some str ->
         F.pp_print_string fmt str
     | None -> (
-        let procname_str = Typ.Procname.to_simplified_string pn in
+        let procname_str = Procname.to_simplified_string pn in
         match pn with
-        | Typ.Procname.ObjC_Cpp {kind= ObjCInstanceMethod}
-        | Typ.Procname.ObjC_Cpp {kind= ObjCClassMethod} -> (
+        | Procname.ObjC_Cpp {kind= ObjCInstanceMethod} | Procname.ObjC_Cpp {kind= ObjCClassMethod}
+          -> (
           match String.lsplit2 ~on:':' procname_str with
           | Some (base_name, _) ->
               F.pp_print_string fmt base_name
@@ -68,17 +68,17 @@ let rec pp fmt = function
       F.fprintf fmt "*%a" pp de
   | Dfcall (fun_dexp, args, _, {cf_virtual= isvirtual}) ->
       let pp_args fmt des =
-        if eradicate_java () then ( if des <> [] then F.pp_print_string fmt "..." )
+        if eradicate_java () then (if not (List.is_empty des) then F.pp_print_string fmt "...")
         else Pp.comma_seq pp fmt des
       in
       let pp_fun fmt = function
         | Dconst (Cfun pname) ->
             let s =
               match pname with
-              | Typ.Procname.Java pname_java ->
-                  Typ.Procname.Java.get_method pname_java
+              | Procname.Java pname_java ->
+                  Procname.Java.get_method pname_java
               | _ ->
-                  Typ.Procname.to_string pname
+                  Procname.to_string pname
             in
             F.pp_print_string fmt s
         | de ->
@@ -97,18 +97,17 @@ let rec pp fmt = function
       F.fprintf fmt "%a%a(%a)" pp_receiver receiver pp_fun fun_dexp pp_args args'
   | Darrow (Dpvar pv, f) when Pvar.is_this pv ->
       (* this->fieldname *)
-      F.pp_print_string fmt (Typ.Fieldname.to_simplified_string f)
+      F.pp_print_string fmt (Fieldname.to_simplified_string f)
   | Darrow (de, f) ->
       if Language.curr_language_is Java then
-        F.fprintf fmt "%a.%s" pp de (Typ.Fieldname.to_flat_string f)
-      else F.fprintf fmt "%a->%s" pp de (Typ.Fieldname.to_string f)
+        F.fprintf fmt "%a.%s" pp de (Fieldname.get_field_name f)
+      else F.fprintf fmt "%a->%s" pp de (Fieldname.to_string f)
   | Ddot (Dpvar _, fe) when eradicate_java () ->
       (* static field access *)
-      F.pp_print_string fmt (Typ.Fieldname.to_simplified_string fe)
+      F.pp_print_string fmt (Fieldname.to_simplified_string fe)
   | Ddot (de, f) ->
       let field_text =
-        if Language.curr_language_is Java then Typ.Fieldname.to_flat_string f
-        else Typ.Fieldname.to_string f
+        if Language.curr_language_is Java then Fieldname.get_field_name f else Fieldname.to_string f
       in
       F.fprintf fmt "%a.%s" pp de field_text
   | Dpvar pv ->
@@ -141,15 +140,14 @@ let pp_vpath pe fmt vpath =
   let pp fmt = function Some de -> pp fmt de | None -> () in
   if Pp.equal_print_kind pe.Pp.kind Pp.HTML then
     let pp f vpath = F.fprintf f "{vpath: %a}" pp vpath in
-    Io_infer.Html.with_color Orange pp fmt vpath
+    Pp.html_with_color Orange pp fmt vpath
   else pp fmt vpath
 
 
 let rec has_tmp_var = function
   | Dpvar pvar | Dpvaraddr pvar ->
       Pvar.is_frontend_tmp pvar || Pvar.is_clang_tmp pvar
-  | Dderef dexp | Ddot (dexp, _) | Darrow (dexp, _) | Dunop (_, dexp) | Dsizeof (_, Some dexp, _)
-    ->
+  | Dderef dexp | Ddot (dexp, _) | Darrow (dexp, _) | Dunop (_, dexp) | Dsizeof (_, Some dexp, _) ->
       has_tmp_var dexp
   | Darray (dexp1, dexp2) | Dbinop (_, dexp1, dexp2) ->
       has_tmp_var dexp1 || has_tmp_var dexp2

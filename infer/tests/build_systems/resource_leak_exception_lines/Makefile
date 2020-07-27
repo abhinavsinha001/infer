@@ -1,4 +1,4 @@
-# Copyright (c) 2017-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -21,8 +21,7 @@ $(REPORT): $(JAVA_DEPS) $(MAKEFILE_LIST) SimpleLeak.java
 
 $(EXPECTED_TEST_OUTPUT): $(REPORT)
 	$(QUIET)$(INFER_BIN) report -o $(<D) \
-		--issues-fields "qualifier_contains_potential_exception_note,bug_type,bucket,file,procedure,line_offset" \
-		--from-json-report $(REPORT) \
+		--issues-tests-fields "qualifier_contains_potential_exception_note,bug_type,bucket,file,procedure,line_offset" \
 		--issues-tests $(EXPECTED_TEST_OUTPUT)
 
 .PHONY: print

@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -44,6 +44,8 @@ let is_footprint = function ProgramVar _ -> false | LogicalVar id -> Ident.is_fo
 
 let is_none = function LogicalVar id -> Ident.is_none id | _ -> false
 
+let is_this = function ProgramVar pv -> Pvar.is_this pv | LogicalVar _ -> false
+
 let get_declaring_function = function
   | LogicalVar _ ->
       None
@@ -52,7 +54,7 @@ let get_declaring_function = function
 
 
 let is_local_to_procedure proc_name var =
-  get_declaring_function var |> Option.exists ~f:(Typ.Procname.equal proc_name)
+  get_declaring_function var |> Option.exists ~f:(Procname.equal proc_name)
 
 
 let get_all_vars_in_exp e =
@@ -86,9 +88,7 @@ let get_footprint_index t =
 
 
 module Map = PrettyPrintable.MakePPMap (struct
-  type nonrec t = t
-
-  let compare = compare
+  type nonrec t = t [@@deriving compare]
 
   let pp = pp
 end)

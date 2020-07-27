@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2014-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,25 +9,7 @@ open! IStd
 
 (** Module for the checks called by Eradicate. *)
 
-(* do not report RETURN_NOT_NULLABLE if the return is annotated @Nonnull *)
-let return_nonnull_silent = true
-
-let get_field_annotation tenv fn typ =
-  let lookup = Tenv.lookup tenv in
-  match Typ.Struct.get_field_type_and_annotation ~lookup fn typ with
-  | None ->
-      None
-  | Some (t, ia) ->
-      let ia' =
-        (* TODO (t4968422) eliminate not !Config.eradicate check by marking fields as nullified *)
-        (* outside of Eradicate in some other way *)
-        if not Config.eradicate then AnnotatedSignature.mk_ia AnnotatedSignature.Nullable ia
-        else ia
-      in
-      Some (t, ia')
-
-
-let report_error tenv = TypeErr.report_error tenv (EradicateCheckers.report_error tenv)
+module L = Logging
 
 let explain_expr tenv node e =
   match Errdesc.exp_rv_dexp tenv node e with
@@ -37,65 +19,39 @@ let explain_expr tenv node e =
       None
 
 
-(** Classify a procedure. *)
-let classify_procedure proc_attributes =
-  let pn = proc_attributes.ProcAttributes.proc_name in
-  let unique_id = Typ.Procname.to_unique_id pn in
-  let classification =
-    if Models.is_modelled_nullable pn then "M" (* modelled *)
-    else if Summary.proc_is_library proc_attributes then "L" (* library *)
-    else if not proc_attributes.ProcAttributes.is_defined then "S" (* skip *)
-    else if String.is_prefix ~prefix:"com.facebook" unique_id then "F" (* FB *)
-    else "?"
-  in
-  classification
+let is_virtual = function
+  | AnnotatedSignature.{mangled} :: _ when Mangled.is_this mangled ->
+      true
+  | _ ->
+      false
 
 
-let is_virtual = function (p, _, _) :: _ when Mangled.is_this p -> true | _ -> false
-
-(** Check an access (read or write) to a field. *)
-let check_field_access tenv find_canonical_duplicate curr_pname node instr_ref exp fname ta loc :
-    unit =
-  if TypeAnnotation.get_value AnnotatedSignature.Nullable ta then
-    let origin_descr = TypeAnnotation.descr_origin ta in
-    report_error tenv find_canonical_duplicate
-      (TypeErr.Null_field_access (explain_expr tenv node exp, fname, origin_descr, false))
-      (Some instr_ref) loc curr_pname
-
-
-(** Check an access to an array *)
-let check_array_access tenv find_canonical_duplicate curr_pname node instr_ref array_exp fname ta
-    loc indexed =
-  if TypeAnnotation.get_value AnnotatedSignature.Nullable ta then
-    let origin_descr = TypeAnnotation.descr_origin ta in
-    report_error tenv find_canonical_duplicate
-      (TypeErr.Null_field_access (explain_expr tenv node array_exp, fname, origin_descr, indexed))
-      (Some instr_ref) loc curr_pname
+let check_object_dereference ({IntraproceduralAnalysis.tenv; _} as analysis_data) ~nullsafe_mode
+    find_canonical_duplicate node instr_ref object_exp dereference_type inferred_nullability loc =
+  Result.iter_error
+    (DereferenceRule.check (InferredNullability.get_nullability inferred_nullability))
+    ~f:(fun dereference_violation ->
+      let nullable_object_origin = InferredNullability.get_origin inferred_nullability in
+      let nullable_object_descr = explain_expr tenv node object_exp in
+      let type_error =
+        TypeErr.Nullable_dereference
+          { dereference_violation
+          ; dereference_location= loc
+          ; nullable_object_descr
+          ; dereference_type
+          ; nullable_object_origin }
+      in
+      TypeErr.register_error analysis_data find_canonical_duplicate type_error (Some instr_ref)
+        ~nullsafe_mode loc )
 
 
-(** Where the condition is coming from *)
-type from_call =
-  | From_condition  (** Direct condition *)
-  | From_instanceof  (** x instanceof C *)
-  | From_is_false_on_null  (** returns false on null *)
-  | From_is_true_on_null  (** returns true on null *)
-  | From_optional_isPresent  (** x.isPresent *)
-  | From_containsKey  (** x.containsKey *)
-[@@deriving compare]
-
-let equal_from_call = [%compare.equal: from_call]
-
-(** Check the normalized "is zero" or "is not zero" condition of a prune instruction. *)
-let check_condition tenv case_zero find_canonical_duplicate curr_pdesc node e typ ta true_branch
-    from_call idenv linereader loc instr_ref : unit =
-  let is_fun_nonnull ta =
-    match TypeAnnotation.get_origin ta with
-    | TypeOrigin.Proc proc_origin ->
-        let ia, _ = proc_origin.TypeOrigin.annotated_signature.AnnotatedSignature.ret in
-        Annotations.ia_is_nonnull ia
-    | _ ->
-        false
-  in
+(** [expr] is an expression that was explicitly compared with `null`. At the same time, [expr] had
+    [inferred_nullability] before the comparision. Check if the comparision is redundant and emit an
+    issue, if this is the case. *)
+let check_condition_for_redundancy
+    ({IntraproceduralAnalysis.tenv; proc_desc= curr_pdesc; _} as analysis_data) ~is_always_true
+    find_canonical_duplicate node ~nullsafe_mode expr typ inferred_nullability idenv linereader loc
+    instr_ref : unit =
   let contains_instanceof_throwable pdesc node =
     (* Check if the current procedure has a catch Throwable. *)
     (* That always happens in the bytecode generated by try-with-resources. *)
@@ -110,7 +66,7 @@ let check_condition tenv case_zero find_canonical_duplicate curr_pdesc node e ty
     in
     let do_instr = function
       | Sil.Call (_, Exp.Const (Const.Cfun pn), [_; (Exp.Sizeof {typ}, _)], _, _)
-        when Typ.Procname.equal pn BuiltinDecl.__instanceof && typ_is_throwable typ ->
+        when Procname.equal pn BuiltinDecl.__instanceof && typ_is_throwable typ ->
           throwable_found := true
       | _ ->
           ()
@@ -119,11 +75,12 @@ let check_condition tenv case_zero find_canonical_duplicate curr_pdesc node e ty
       if Location.equal loc (Procdesc.Node.get_loc n) then
         Instrs.iter ~f:do_instr (Procdesc.Node.get_instrs n)
     in
-    Procdesc.iter_nodes do_node pdesc ; !throwable_found
+    Procdesc.iter_nodes do_node pdesc ;
+    !throwable_found
   in
   let from_try_with_resources () : bool =
     (* heuristic to check if the condition is the translation of try-with-resources *)
-    match Printer.LineReader.from_loc linereader loc with
+    match LineReader.from_loc linereader loc with
     | Some line ->
         (not (String.is_substring ~substring:"==" line || String.is_substring ~substring:"!=" line))
         && String.is_substring ~substring:"}" line
@@ -131,167 +88,247 @@ let check_condition tenv case_zero find_canonical_duplicate curr_pdesc node e ty
     | None ->
         false
   in
-  let is_temp = Idenv.exp_is_temp idenv e in
-  let nonnull = is_fun_nonnull ta in
+  let is_temp = IDEnv.exp_is_temp idenv expr in
   let should_report =
-    (not (TypeAnnotation.get_value AnnotatedSignature.Nullable ta))
-    && (Config.eradicate_condition_redundant || nonnull)
-    && true_branch && ((not is_temp) || nonnull) && PatternMatch.type_is_class typ
+    (* NOTE: We have different levels of non-nullability. In practice there is a big difference
+       between certainty for different cases: whether expression is the result of something that can not be null
+       due to language semantics, or comes from something that is merely not declared as nullable.
+       We report both types of issues now, which is OK since this warning is turned off by default.
+       In the future we might as well start reporting only for cases where we are more confident.
+       Hovewer keep in mind that for code analysis purposes all condition redudant warnings can be useful,
+       particularly they help to find popular functions that should have been annotated as nullable, but were not made so.
+    *)
+    (* NOTE: We don't report the opposite case, namely when the expression is known to be always `null`. Consider changing this.
+    *)
+    InferredNullability.is_nonnullish inferred_nullability
+    && Config.eradicate_condition_redundant && (not is_temp) && PatternMatch.type_is_class typ
     && (not (from_try_with_resources ()))
-    && equal_from_call from_call From_condition
-    && not (TypeAnnotation.origin_is_fun_library ta)
+    && not (InferredNullability.origin_is_fun_defined inferred_nullability)
   in
-  let is_always_true = not case_zero in
-  let nonnull = is_fun_nonnull ta in
   if should_report then
-    report_error tenv find_canonical_duplicate
-      (TypeErr.Condition_redundant (is_always_true, explain_expr tenv node e, nonnull))
-      (Some instr_ref) loc curr_pdesc
-
-
-(** Check an "is zero" condition. *)
-let check_zero tenv find_canonical_duplicate = check_condition tenv true find_canonical_duplicate
-
-(** Check an "is not zero" condition. *)
-let check_nonzero tenv find_canonical_duplicate =
-  check_condition tenv false find_canonical_duplicate
+    (* TODO(T61051649) this is not really condition. This is an expression.
+       This leads to inconsistent messaging like "condition `some_variable` is always true".
+       So Condition_redundant should either accept expression, or this should pass a condition.
+    *)
+    let condition_descr = explain_expr tenv node expr in
+    let nonnull_origin = InferredNullability.get_origin inferred_nullability in
+    TypeErr.register_error analysis_data find_canonical_duplicate
+      (TypeErr.Condition_redundant {is_always_true; condition_descr; nonnull_origin})
+      (Some instr_ref) ~nullsafe_mode loc
 
 
 (** Check an assignment to a field. *)
-let check_field_assignment tenv find_canonical_duplicate curr_pdesc node instr_ref typestate
-    exp_lhs exp_rhs typ loc fname t_ia_opt typecheck_expr : unit =
-  let curr_pname = Procdesc.get_proc_name curr_pdesc in
-  let t_lhs, ta_lhs, _ =
-    typecheck_expr node instr_ref curr_pdesc typestate exp_lhs
-      (typ, TypeAnnotation.const AnnotatedSignature.Nullable false TypeOrigin.ONone, [loc])
-      loc
-  in
-  let _, ta_rhs, _ =
-    typecheck_expr node instr_ref curr_pdesc typestate exp_rhs
-      (typ, TypeAnnotation.const AnnotatedSignature.Nullable false TypeOrigin.ONone, [loc])
-      loc
-  in
-  let should_report_nullable =
-    let field_is_field_injector_readwrite () =
-      match t_ia_opt with
-      | Some (_, ia) ->
-          Annotations.ia_is_field_injector_readwrite ia
-      | _ ->
-          false
-    in
-    (not (AndroidFramework.is_destroy_method curr_pname))
-    && (not (TypeAnnotation.get_value AnnotatedSignature.Nullable ta_lhs))
-    && TypeAnnotation.get_value AnnotatedSignature.Nullable ta_rhs
-    && PatternMatch.type_is_class t_lhs
-    && (not (Typ.Fieldname.Java.is_outer_instance fname))
-    && not (field_is_field_injector_readwrite ())
-  in
-  let should_report_absent =
-    Config.eradicate_optional_present
-    && TypeAnnotation.get_value AnnotatedSignature.Present ta_lhs
-    && (not (TypeAnnotation.get_value AnnotatedSignature.Present ta_rhs))
-    && not (Typ.Fieldname.Java.is_outer_instance fname)
-  in
-  let should_report_mutable =
-    let field_is_mutable () =
-      match t_ia_opt with Some (_, ia) -> Annotations.ia_is_mutable ia | _ -> false
-    in
-    Config.eradicate_field_not_mutable
-    && (not (Typ.Procname.is_constructor curr_pname))
-    && ( match curr_pname with
-       | Typ.Procname.Java java_pname ->
-           not (Typ.Procname.Java.is_class_initializer java_pname)
-       | _ ->
-           true )
-    && not (field_is_mutable ())
-  in
-  ( if should_report_nullable || should_report_absent then
-    let ann =
-      if should_report_nullable then AnnotatedSignature.Nullable else AnnotatedSignature.Present
-    in
-    let origin_descr = TypeAnnotation.descr_origin ta_rhs in
-    report_error tenv find_canonical_duplicate
-      (TypeErr.Field_annotation_inconsistent (ann, fname, origin_descr))
-      (Some instr_ref) loc curr_pdesc ) ;
-  if should_report_mutable then
-    let origin_descr = TypeAnnotation.descr_origin ta_rhs in
-    report_error tenv find_canonical_duplicate
-      (TypeErr.Field_not_mutable (fname, origin_descr))
-      (Some instr_ref) loc curr_pdesc
+let check_field_assignment
+    ({IntraproceduralAnalysis.tenv; proc_desc= curr_pdesc; _} as analysis_data) ~nullsafe_mode
+    find_canonical_duplicate node instr_ref typestate ~expr_rhs ~field_type loc fname
+    (annotated_field : AnnotatedField.t) typecheck_expr : unit =
+  L.d_with_indent ~name:"check_field_assignment" (fun () ->
+      let curr_pname = Procdesc.get_proc_name curr_pdesc in
+      let curr_pattrs = Procdesc.get_attributes curr_pdesc in
+      let _, inferred_nullability_rhs =
+        L.d_strln "Typechecking rhs" ;
+        typecheck_expr node instr_ref typestate expr_rhs
+          (* TODO(T54687014) optimistic default might be an unsoundness issue - investigate *)
+          (field_type, InferredNullability.create TypeOrigin.OptimisticFallback)
+          loc
+      in
+      let field_is_injector_readwrite () =
+        Annotations.ia_is_field_injector_readwrite annotated_field.annotation_deprecated
+      in
+      let field_is_in_cleanup_context () =
+        let AnnotatedSignature.{ret_annotation_deprecated} =
+          (* TODO(T62825735): support trusted callees for fields *)
+          (Models.get_modelled_annotated_signature ~is_callee_in_trust_list:false tenv curr_pattrs)
+            .ret
+        in
+        Annotations.ia_is_cleanup ret_annotation_deprecated
+      in
+      let declared_nullability =
+        AnnotatedNullability.get_nullability annotated_field.annotated_type.nullability
+      in
+      let assignment_check_result =
+        AssignmentRule.check ~lhs:declared_nullability
+          ~rhs:(InferredNullability.get_nullability inferred_nullability_rhs)
+      in
+      Result.iter_error assignment_check_result ~f:(fun assignment_violation ->
+          let should_report =
+            (not (AndroidFramework.is_destroy_method curr_pname))
+            && PatternMatch.type_is_class field_type
+            && (not (Fieldname.is_java_outer_instance fname))
+            && (not (field_is_injector_readwrite ()))
+            && not (field_is_in_cleanup_context ())
+          in
+          if should_report then
+            let rhs_origin = InferredNullability.get_origin inferred_nullability_rhs in
+            TypeErr.register_error analysis_data find_canonical_duplicate
+              (TypeErr.Bad_assignment
+                 { assignment_violation
+                 ; assignment_location= loc
+                 ; rhs_origin
+                 ; assignment_type= AssignmentRule.ReportableViolation.AssigningToField fname })
+              (Some instr_ref) ~nullsafe_mode loc ) )
 
 
-(** Check that nonnullable fields are initialized in constructors. *)
-let check_constructor_initialization tenv find_canonical_duplicate curr_pname curr_pdesc start_node
-    final_initializer_typestates final_constructor_typestates loc : unit =
-  State.set_node start_node ;
-  if Typ.Procname.is_constructor curr_pname then
-    match PatternMatch.get_this_type (Procdesc.get_attributes curr_pdesc) with
+(* Check if the field declared as not nullable (implicitly or explicitly). If the field is
+   absent, we optimistically assume it is not nullable.
+
+   TODO(T54687014) investigate if this leads to unsoundness issues in practice *)
+let is_field_declared_as_nonnull annotated_field_opt =
+  let is_nonnullish AnnotatedField.{annotated_type= {nullability}} =
+    Nullability.is_nonnullish (AnnotatedNullability.get_nullability nullability)
+  in
+  Option.exists annotated_field_opt ~f:is_nonnullish
+
+
+let lookup_field_in_typestate pname field_name typestate =
+  let pvar = Pvar.mk (Mangled.from_string (Fieldname.to_string field_name)) pname in
+  TypeState.lookup_pvar pvar typestate
+
+
+(* Given a predicate over field name, look ups the field and returns a predicate
+  over this field value in a typestate, or true if there is no such a field in typestate *)
+let convert_predicate predicate_over_field_name field_name (pname, typestate) =
+  let range_for_field = lookup_field_in_typestate pname field_name typestate in
+  Option.exists range_for_field ~f:predicate_over_field_name
+
+
+(* Given a list of typestates, does a given predicate about the field hold for at least one of them? *)
+let predicate_holds_for_some_typestate typestate_list field_name ~predicate =
+  List.exists typestate_list ~f:(convert_predicate predicate field_name)
+
+
+(* Given the typestate and the field, what is the upper bound of field nullability in this typestate?
+ *)
+let get_nullability_upper_bound_for_typestate proc_name field_name typestate =
+  let range_for_field = lookup_field_in_typestate proc_name field_name typestate in
+  match range_for_field with
+  | None ->
+      (* There is no information about the field type in typestate (field was not assigned in all paths).
+         It gives the most generic upper bound.
+      *)
+      Nullability.top
+  (* We were able to lookup the field. Its nullability gives precise upper bound. *)
+  | Some (_, inferred_nullability) ->
+      InferredNullability.get_nullability inferred_nullability
+
+
+(* Given the list of typestates (each corresponding to the final result of executing of some function),
+   and the field, what is the upper bound of field nullability joined over all typestates?
+ *)
+let get_nullability_upper_bound field_name typestate_list =
+  (* Join upper bounds for all typestates in the list *)
+  List.fold typestate_list ~init:Nullability.StrictNonnull ~f:(fun acc (proc_name, typestate) ->
+      Nullability.join acc
+        (get_nullability_upper_bound_for_typestate proc_name field_name typestate) )
+
+
+let is_generated_field field_name =
+  (* Annotation transformers might generate hidden fields in the class.
+     We distinguish such fields by their prefix.
+  *)
+  String.is_prefix ~prefix:"$" (Fieldname.get_field_name field_name)
+
+
+(** Check field initialization for a given constructor *)
+let check_constructor_initialization
+    ({IntraproceduralAnalysis.tenv; proc_desc= curr_constructor_pdesc; _} as analysis_data)
+    find_canonical_duplicate start_node ~nullsafe_mode
+    ~typestates_for_curr_constructor_and_all_initializer_methods
+    ~typestates_for_all_constructors_incl_current loc : unit =
+  AnalysisState.set_node start_node ;
+  if Procname.is_constructor (Procdesc.get_proc_name curr_constructor_pdesc) then
+    match
+      PatternMatch.get_this_type_nonstatic_methods_only
+        (Procdesc.get_attributes curr_constructor_pdesc)
+    with
     | Some {desc= Tptr (({desc= Tstruct name} as ts), _)} -> (
       match Tenv.lookup tenv name with
       | Some {fields} ->
-          let do_field (fn, ft, _) =
-            let annotated_with f =
-              match get_field_annotation tenv fn ts with None -> false | Some (_, ia) -> f ia
+          let do_field (field_name, field_type, _) =
+            let annotated_field = AnnotatedField.get tenv field_name ts in
+            let is_initialized_by_framework =
+              match annotated_field with
+              | None ->
+                  false
+              | Some {annotation_deprecated} ->
+                  (* Initialized by Dependency Injection framework *)
+                  Annotations.ia_is_field_injector_readonly annotation_deprecated
+                  (* Initialized by Json framework *)
+                  || Annotations.ia_is_json_field annotation_deprecated
             in
-            let nullable_annotated = annotated_with Annotations.ia_is_nullable in
-            let nonnull_annotated = annotated_with Annotations.ia_is_nonnull in
-            let injector_readonly_annotated =
-              annotated_with Annotations.ia_is_field_injector_readonly
-            in
-            let final_type_annotation_with unknown list f =
-              let filter_range_opt = function Some (_, ta, _) -> f ta | None -> unknown in
-              List.exists
-                ~f:(function
-                  | pname, typestate ->
-                      let pvar =
-                        Pvar.mk (Mangled.from_string (Typ.Fieldname.to_string fn)) pname
-                      in
-                      filter_range_opt (TypeState.lookup_pvar pvar typestate) )
-                list
-            in
-            let may_be_assigned_in_final_typestate =
-              let origin_is_initialized = function
-                | TypeOrigin.Undef ->
+            let is_initialized_in_either_constructor_or_initializer =
+              let is_initialized = function
+                | TypeOrigin.Field {object_origin= TypeOrigin.This} ->
+                    (* Circular initialization - does not count *)
                     false
-                | TypeOrigin.Field (TypeOrigin.Formal name, _, _) ->
-                    let circular = Mangled.is_this name in
-                    not circular
                 | _ ->
+                    (* Found in typestate, hence the field was initialized *)
                     true
               in
-              final_type_annotation_with false (Lazy.force final_initializer_typestates) (fun ta ->
-                  origin_is_initialized (TypeAnnotation.get_origin ta) )
+              predicate_holds_for_some_typestate
+                (Lazy.force typestates_for_curr_constructor_and_all_initializer_methods) field_name
+                ~predicate:(fun (_, nullability) ->
+                  is_initialized (InferredNullability.get_origin nullability) )
             in
-            let may_be_nullable_in_final_typestate () =
-              final_type_annotation_with true (Lazy.force final_constructor_typestates) (fun ta ->
-                  TypeAnnotation.get_value AnnotatedSignature.Nullable ta )
+            (* TODO(T54584721) This check is completely independent of the current constuctor we check.
+               This check should be moved out of this function. Until it is done,
+               we issue one over-annotated warning per constructor, which does not make a lot of sense. *)
+            let field_nullability_upper_bound_over_all_typestates () =
+              get_nullability_upper_bound field_name
+                (Lazy.force typestates_for_all_constructors_incl_current)
             in
             let should_check_field_initialization =
               let in_current_class =
-                let fld_cname = Typ.Fieldname.Java.get_class fn in
-                String.equal (Typ.Name.name name) fld_cname
+                let fld_cname = Fieldname.get_class_name field_name in
+                Typ.Name.equal name fld_cname
               in
-              (not injector_readonly_annotated) && PatternMatch.type_is_class ft
+              (* various frameworks initialize spefic fields behind the scenes,
+                 we assume they are doing it well
+              *)
+              (not is_initialized_by_framework)
+              (* primitive types can not be null so initialization check is not needed *)
+              && PatternMatch.type_is_class field_type
               && in_current_class
-              && not (Typ.Fieldname.Java.is_outer_instance fn)
+              && (not (Fieldname.is_java_outer_instance field_name))
+              (* not user code, unactionable errors *)
+              && not (is_generated_field field_name)
             in
             if should_check_field_initialization then (
-              (* Check if field is missing annotation. *)
+              (* Check if non-null field is not initialized. *)
               if
-                (not (nullable_annotated || nonnull_annotated))
-                && not may_be_assigned_in_final_typestate
+                is_field_declared_as_nonnull annotated_field
+                && not is_initialized_in_either_constructor_or_initializer
               then
-                report_error tenv find_canonical_duplicate
-                  (TypeErr.Field_not_initialized (fn, curr_pname))
-                  None loc curr_pdesc ;
+                if
+                  Config.nullsafe_disable_field_not_initialized_in_nonstrict_classes
+                  && NullsafeMode.equal nullsafe_mode NullsafeMode.Default
+                then
+                  (* Behavior needed for backward compatibility, where we are not ready to surface this type of errors by default.
+                     Hovewer, this error should be always turned on for @NullsafeStrict classes.
+                  *)
+                  ()
+                else
+                  TypeErr.register_error analysis_data find_canonical_duplicate
+                    (TypeErr.Field_not_initialized {field_name})
+                    None ~nullsafe_mode loc ;
               (* Check if field is over-annotated. *)
-              if
-                Config.eradicate_field_over_annotated && nullable_annotated
-                && not (may_be_nullable_in_final_typestate ())
-              then
-                report_error tenv find_canonical_duplicate
-                  (TypeErr.Field_over_annotated (fn, curr_pname))
-                  None loc curr_pdesc )
+              match annotated_field with
+              | None ->
+                  ()
+              | Some annotated_field ->
+                  if Config.eradicate_field_over_annotated then
+                    let what =
+                      AnnotatedNullability.get_nullability
+                        annotated_field.annotated_type.nullability
+                    in
+                    let by_rhs_upper_bound = field_nullability_upper_bound_over_all_typestates () in
+                    Result.iter_error (OverAnnotatedRule.check ~what ~by_rhs_upper_bound)
+                      ~f:(fun over_annotated_violation ->
+                        TypeErr.register_error analysis_data find_canonical_duplicate
+                          (TypeErr.Over_annotation
+                             { over_annotated_violation
+                             ; violation_type= OverAnnotatedRule.FieldOverAnnoted field_name })
+                          ~nullsafe_mode None loc ) )
           in
           List.iter ~f:do_field fields
       | None ->
@@ -300,190 +337,241 @@ let check_constructor_initialization tenv find_canonical_duplicate curr_pname cu
         ()
 
 
+let check_return_not_nullable ({IntraproceduralAnalysis.proc_desc= curr_pdesc; _} as analysis_data)
+    ~nullsafe_mode find_canonical_duplicate loc (ret_signature : AnnotatedSignature.ret_signature)
+    ret_inferred_nullability =
+  (* Returning from a function is essentially an assignment the actual return value to the formal `return` *)
+  let lhs = AnnotatedNullability.get_nullability ret_signature.ret_annotated_type.nullability in
+  let rhs = InferredNullability.get_nullability ret_inferred_nullability in
+  Result.iter_error (AssignmentRule.check ~lhs ~rhs) ~f:(fun assignment_violation ->
+      let rhs_origin = InferredNullability.get_origin ret_inferred_nullability in
+      let curr_pname = Procdesc.get_proc_name curr_pdesc in
+      TypeErr.register_error analysis_data find_canonical_duplicate
+        (Bad_assignment
+           { assignment_violation
+           ; assignment_location= loc
+           ; rhs_origin
+           ; assignment_type= ReturningFromFunction curr_pname })
+        None ~nullsafe_mode loc )
+
+
+let check_return_overrannotated
+    ({IntraproceduralAnalysis.proc_desc= curr_pdesc; _} as analysis_data) find_canonical_duplicate
+    loc ~nullsafe_mode (ret_signature : AnnotatedSignature.ret_signature) ret_inferred_nullability =
+  (* Returning from a function is essentially an assignment the actual return value to the formal `return` *)
+  let what = AnnotatedNullability.get_nullability ret_signature.ret_annotated_type.nullability in
+  (* In our CFG implementation, there is only one place where we return from a function
+     (all execution flow joins are already made), hence inferreed nullability of returns gives us
+     correct upper bound.
+  *)
+  let by_rhs_upper_bound = InferredNullability.get_nullability ret_inferred_nullability in
+  Result.iter_error (OverAnnotatedRule.check ~what ~by_rhs_upper_bound)
+    ~f:(fun over_annotated_violation ->
+      let curr_pname = Procdesc.get_proc_name curr_pdesc in
+      TypeErr.register_error analysis_data find_canonical_duplicate
+        (Over_annotation {over_annotated_violation; violation_type= ReturnOverAnnotated curr_pname})
+        None ~nullsafe_mode loc )
+
+
 (** Check the annotations when returning from a method. *)
-let check_return_annotation tenv find_canonical_duplicate curr_pdesc ret_range
-    (annotated_signature : AnnotatedSignature.t) ret_implicitly_nullable loc : unit =
-  let ret_ia, _ = annotated_signature.ret in
+let check_return_annotation ({IntraproceduralAnalysis.proc_desc= curr_pdesc; _} as analysis_data)
+    find_canonical_duplicate ret_range (annotated_signature : AnnotatedSignature.t)
+    ret_implicitly_nullable loc : unit =
   let curr_pname = Procdesc.get_proc_name curr_pdesc in
-  let ret_annotated_nullable =
-    Annotations.ia_is_nullable ret_ia
-    || List.exists
-         ~f:(fun (_, ia, _) -> Annotations.ia_is_propagates_nullable ia)
-         annotated_signature.params
-  in
-  let ret_annotated_present = Annotations.ia_is_present ret_ia in
-  let ret_annotated_nonnull = Annotations.ia_is_nonnull ret_ia in
   match ret_range with
   (* Disables the warnings since it is not clear how to annotate the return value of lambdas *)
   | Some _
-    when match curr_pname with
-         | Typ.Procname.Java java_pname ->
-             Typ.Procname.Java.is_lambda java_pname
-         | _ ->
-             false ->
+    when match curr_pname with Java java_pname -> Procname.Java.is_lambda java_pname | _ -> false ->
       ()
-  | Some (_, final_ta, _) ->
-      let final_nullable = TypeAnnotation.get_value AnnotatedSignature.Nullable final_ta in
-      let final_present = TypeAnnotation.get_value AnnotatedSignature.Present final_ta in
-      let origin_descr = TypeAnnotation.descr_origin final_ta in
-      let return_not_nullable =
-        final_nullable && (not ret_annotated_nullable) && (not ret_implicitly_nullable)
-        && not (return_nonnull_silent && ret_annotated_nonnull)
-      in
-      let return_value_not_present =
-        Config.eradicate_optional_present && (not final_present) && ret_annotated_present
-      in
-      let return_over_annotated =
-        (not final_nullable) && ret_annotated_nullable && Config.eradicate_return_over_annotated
-      in
-      ( if return_not_nullable || return_value_not_present then
-        let ann =
-          if return_not_nullable then AnnotatedSignature.Nullable else AnnotatedSignature.Present
-        in
-        report_error tenv find_canonical_duplicate
-          (TypeErr.Return_annotation_inconsistent (ann, curr_pname, origin_descr))
-          None loc curr_pdesc ) ;
-      if return_over_annotated then
-        report_error tenv find_canonical_duplicate (TypeErr.Return_over_annotated curr_pname) None
-          loc curr_pdesc
+  | Some (_, ret_inferred_nullability) ->
+      (* TODO(T54308240) Model ret_implicitly_nullable in AnnotatedNullability *)
+      if not ret_implicitly_nullable then
+        check_return_not_nullable analysis_data ~nullsafe_mode:annotated_signature.nullsafe_mode
+          find_canonical_duplicate loc annotated_signature.ret ret_inferred_nullability ;
+      if Config.eradicate_return_over_annotated then
+        check_return_overrannotated analysis_data find_canonical_duplicate loc
+          annotated_signature.ret ~nullsafe_mode:annotated_signature.nullsafe_mode
+          ret_inferred_nullability
   | None ->
       ()
 
 
 (** Check the receiver of a virtual call. *)
-let check_call_receiver tenv find_canonical_duplicate curr_pdesc node typestate call_params
-    callee_pname (instr_ref : TypeErr.InstrRef.t) loc typecheck_expr : unit =
+let check_call_receiver analysis_data ~nullsafe_mode find_canonical_duplicate node typestate
+    call_params callee_pname (instr_ref : TypeErr.InstrRef.t) loc typecheck_expr : unit =
   match call_params with
   | ((original_this_e, this_e), typ) :: _ ->
-      let _, this_ta, _ =
-        typecheck_expr tenv node instr_ref curr_pdesc typestate this_e
-          (typ, TypeAnnotation.const AnnotatedSignature.Nullable false TypeOrigin.ONone, [])
+      let _, this_inferred_nullability =
+        typecheck_expr node instr_ref typestate this_e
+          (* TODO(T54687014) optimistic default might be an unsoundness issue - investigate *)
+          (typ, InferredNullability.create TypeOrigin.OptimisticFallback)
           loc
       in
-      let null_method_call = TypeAnnotation.get_value AnnotatedSignature.Nullable this_ta in
-      let optional_get_on_absent =
-        Config.eradicate_optional_present
-        && Models.is_optional_get callee_pname
-        && not (TypeAnnotation.get_value AnnotatedSignature.Present this_ta)
-      in
-      if null_method_call || optional_get_on_absent then
-        let ann =
-          if null_method_call then AnnotatedSignature.Nullable else AnnotatedSignature.Present
-        in
-        let descr = explain_expr tenv node original_this_e in
-        let origin_descr = TypeAnnotation.descr_origin this_ta in
-        report_error tenv find_canonical_duplicate
-          (TypeErr.Call_receiver_annotation_inconsistent (ann, descr, callee_pname, origin_descr))
-          (Some instr_ref) loc curr_pdesc
+      check_object_dereference analysis_data ~nullsafe_mode find_canonical_duplicate node instr_ref
+        original_this_e (DereferenceRule.ReportableViolation.MethodCall callee_pname)
+        this_inferred_nullability loc
   | [] ->
       ()
 
 
 type resolved_param =
   { num: int
-  ; formal: Mangled.t * TypeAnnotation.t * Typ.t
-  ; actual: Exp.t * TypeAnnotation.t
-  ; propagates_nullable: bool }
+  ; formal: AnnotatedSignature.param_signature
+  ; actual: Exp.t * InferredNullability.t
+  ; is_formal_propagates_nullable: bool }
 
 (** Check the parameters of a call. *)
-let check_call_parameters tenv find_canonical_duplicate curr_pdesc node callee_attributes
-    resolved_params loc instr_ref : unit =
+let check_call_parameters ({IntraproceduralAnalysis.tenv; _} as analysis_data) ~nullsafe_mode
+    ~callee_annotated_signature find_canonical_duplicate node callee_attributes resolved_params loc
+    instr_ref : unit =
   let callee_pname = callee_attributes.ProcAttributes.proc_name in
-  let check {num= param_num; formal= s1, ta1, t1; actual= orig_e2, ta2} =
-    let report ann =
-      let description =
+  let check {num= param_position; formal; actual= orig_e2, nullability_actual} =
+    let report ~nullsafe_mode assignment_violation =
+      let actual_param_expression =
         match explain_expr tenv node orig_e2 with
         | Some descr ->
             descr
         | None ->
-            "formal parameter " ^ Mangled.to_string s1
+            "formal parameter " ^ Mangled.to_string formal.mangled
       in
-      let origin_descr = TypeAnnotation.descr_origin ta2 in
-      let callee_loc = callee_attributes.ProcAttributes.loc in
-      report_error tenv find_canonical_duplicate
-        (TypeErr.Parameter_annotation_inconsistent
-           (ann, description, param_num, callee_pname, callee_loc, origin_descr))
-        (Some instr_ref) loc curr_pdesc
+      let rhs_origin = InferredNullability.get_origin nullability_actual in
+      TypeErr.register_error analysis_data find_canonical_duplicate
+        (Bad_assignment
+           { assignment_violation
+           ; assignment_location= loc
+           ; rhs_origin
+           ; assignment_type=
+               PassingParamToFunction
+                 { param_signature= formal
+                 ; model_source= callee_annotated_signature.AnnotatedSignature.model_source
+                 ; actual_param_expression
+                 ; param_position
+                 ; function_procname= callee_pname } })
+        (Some instr_ref) ~nullsafe_mode loc
     in
-    let check_ann ann =
-      let b1 = TypeAnnotation.get_value ann ta1 in
-      let b2 = TypeAnnotation.get_value ann ta2 in
-      match (ann, b1, b2) with
-      | AnnotatedSignature.Nullable, false, true ->
-          report ann
-      | AnnotatedSignature.Present, true, false ->
-          report ann
-      | _ ->
-          ()
-    in
-    if PatternMatch.type_is_class t1 then (
-      check_ann AnnotatedSignature.Nullable ;
-      if Config.eradicate_optional_present then check_ann AnnotatedSignature.Present )
+    if PatternMatch.type_is_class formal.param_annotated_type.typ then
+      (* Passing a param to a function is essentially an assignment the actual param value
+         to the formal param *)
+      let lhs = AnnotatedNullability.get_nullability formal.param_annotated_type.nullability in
+      let rhs = InferredNullability.get_nullability nullability_actual in
+      Result.iter_error (AssignmentRule.check ~lhs ~rhs) ~f:(report ~nullsafe_mode)
   in
-  let should_check_parameters =
-    match callee_pname with
-    | Typ.Procname.Java java_pname ->
-        (not (Typ.Procname.Java.is_external java_pname))
-        || Models.is_modelled_nullable callee_pname
-    | _ ->
-        false
-  in
-  if should_check_parameters then
-    (* left to right to avoid guessing the different lengths *)
-    List.iter ~f:check resolved_params
+  List.iter ~f:check resolved_params
 
 
-(** Checks if the annotations are consistent with the inherited class or with the
-    implemented interfaces *)
-let check_overridden_annotations find_canonical_duplicate tenv proc_name proc_desc
-    annotated_signature =
+let check_inheritance_rule_for_return
+    ({IntraproceduralAnalysis.proc_desc= overridden_proc_desc; _} as analysis_data)
+    find_canonical_duplicate loc ~nullsafe_mode ~base_proc_name ~base_nullability
+    ~overridden_nullability =
+  Result.iter_error
+    (InheritanceRule.check InheritanceRule.Ret ~base:base_nullability
+       ~overridden:overridden_nullability) ~f:(fun inheritance_violation ->
+      TypeErr.register_error analysis_data find_canonical_duplicate
+        (Inconsistent_subclass
+           { inheritance_violation
+           ; violation_type= InconsistentReturn
+           ; overridden_proc_name= Procdesc.get_proc_name overridden_proc_desc
+           ; base_proc_name })
+        None ~nullsafe_mode loc )
+
+
+let check_inheritance_rule_for_param
+    ({IntraproceduralAnalysis.proc_desc= overridden_proc_desc; _} as analysis_data)
+    find_canonical_duplicate loc ~nullsafe_mode ~overridden_param_name ~base_proc_name
+    ~param_position ~base_nullability ~overridden_nullability =
+  Result.iter_error
+    (InheritanceRule.check InheritanceRule.Param ~base:base_nullability
+       ~overridden:overridden_nullability) ~f:(fun inheritance_violation ->
+      TypeErr.register_error analysis_data find_canonical_duplicate
+        (Inconsistent_subclass
+           { inheritance_violation
+           ; violation_type=
+               InconsistentParam
+                 {param_position; param_description= Mangled.to_string overridden_param_name}
+           ; base_proc_name
+           ; overridden_proc_name= Procdesc.get_proc_name overridden_proc_desc })
+        None ~nullsafe_mode loc )
+
+
+let check_inheritance_rule_for_params analysis_data find_canonical_duplicate loc ~nullsafe_mode
+    ~base_proc_name ~base_signature ~overridden_signature =
+  let base_params = base_signature.AnnotatedSignature.params in
+  let overridden_params = overridden_signature.AnnotatedSignature.params in
+  let zipped_params = List.zip base_params overridden_params in
+  match zipped_params with
+  | Ok base_and_overridden_params ->
+      let should_index_from_zero = is_virtual base_params in
+      (* Check the rule for each pair of base and overridden param *)
+      List.iteri base_and_overridden_params
+        ~f:(fun index
+           ( AnnotatedSignature.{param_annotated_type= {nullability= annotated_nullability_base}}
+           , AnnotatedSignature.
+               { mangled= overridden_param_name
+               ; param_annotated_type= {nullability= annotated_nullability_overridden} } )
+           ->
+          check_inheritance_rule_for_param analysis_data find_canonical_duplicate loc ~nullsafe_mode
+            ~overridden_param_name ~base_proc_name
+            ~param_position:(if should_index_from_zero then index else index + 1)
+            ~base_nullability:(AnnotatedNullability.get_nullability annotated_nullability_base)
+            ~overridden_nullability:
+              (AnnotatedNullability.get_nullability annotated_nullability_overridden) )
+  | Unequal_lengths ->
+      (* Skip checking.
+         TODO (T5280249): investigate why argument lists can be of different length. *)
+      ()
+
+
+(** Check both params and return values for complying for co- and contravariance *)
+let check_inheritance_rule_for_signature analysis_data find_canonical_duplicate loc ~nullsafe_mode
+    ~base_proc_name ~base_signature ~overridden_signature =
+  (* Check params *)
+  check_inheritance_rule_for_params analysis_data find_canonical_duplicate loc ~nullsafe_mode
+    ~base_proc_name ~base_signature ~overridden_signature ;
+  (* Check return value *)
+  match base_proc_name with
+  (* TODO model this as unknown nullability and get rid of that check *)
+  | Procname.Java java_pname when not (Procname.Java.is_external java_pname) ->
+      (* Check if return value is consistent with the base *)
+      let base_nullability =
+        AnnotatedNullability.get_nullability
+          base_signature.AnnotatedSignature.ret.ret_annotated_type.nullability
+      in
+      let overridden_nullability =
+        AnnotatedNullability.get_nullability
+          overridden_signature.AnnotatedSignature.ret.ret_annotated_type.nullability
+      in
+      check_inheritance_rule_for_return analysis_data find_canonical_duplicate loc ~nullsafe_mode
+        ~base_proc_name ~base_nullability ~overridden_nullability
+  | _ ->
+      (* the analysis should not report return type inconsistencies with external code *)
+      ()
+
+
+(** Checks if the annotations are consistent with the derived classes and with the implemented
+    interfaces *)
+let check_overridden_annotations ({IntraproceduralAnalysis.tenv; proc_desc; _} as analysis_data)
+    find_canonical_duplicate annotated_signature =
   let start_node = Procdesc.get_start_node proc_desc in
   let loc = Procdesc.Node.get_loc start_node in
-  let check_return overriden_proc_name overriden_signature =
-    let ret_is_nullable =
-      let ia, _ = annotated_signature.AnnotatedSignature.ret in
-      Annotations.ia_is_nullable ia
-    and ret_overridden_nullable =
-      let overriden_ia, _ = overriden_signature.AnnotatedSignature.ret in
-      Annotations.ia_is_nullable overriden_ia
-    in
-    if ret_is_nullable && not ret_overridden_nullable then
-      report_error tenv find_canonical_duplicate
-        (TypeErr.Inconsistent_subclass_return_annotation (proc_name, overriden_proc_name))
-        None loc proc_desc
-  and check_params overriden_proc_name overriden_signature =
-    let compare pos current_param overriden_param : int =
-      let current_name, current_ia, _ = current_param in
-      let _, overriden_ia, _ = overriden_param in
-      let () =
-        if (not (Annotations.ia_is_nullable current_ia)) && Annotations.ia_is_nullable overriden_ia
-        then
-          report_error tenv find_canonical_duplicate
-            (TypeErr.Inconsistent_subclass_parameter_annotation
-               (Mangled.to_string current_name, pos, proc_name, overriden_proc_name))
-            None loc proc_desc
-      in
-      pos + 1
-    in
-    (* TODO (#5280249): investigate why argument lists can be of different length *)
-    let current_params = annotated_signature.AnnotatedSignature.params
-    and overridden_params = overriden_signature.AnnotatedSignature.params in
-    let initial_pos = if is_virtual current_params then 0 else 1 in
-    if Int.equal (List.length current_params) (List.length overridden_params) then
-      ignore (List.fold2_exn ~f:compare ~init:initial_pos current_params overridden_params)
-  in
-  let check overriden_proc_name =
-    match PatternMatch.lookup_attributes tenv overriden_proc_name with
-    | Some attributes -> (
-        let overridden_signature = Models.get_modelled_annotated_signature attributes in
-        check_params overriden_proc_name overridden_signature ;
-        (* the analysis should not report return type inconsistencies with external code *)
-        match overriden_proc_name with
-        | Typ.Procname.Java java_pname when not (Typ.Procname.Java.is_external java_pname) ->
-            check_return overriden_proc_name overridden_signature
-        | _ ->
-            () )
+  let check_if_base_signature_matches_current base_proc_name =
+    match PatternMatch.lookup_attributes tenv base_proc_name with
+    | Some base_attributes ->
+        let base_signature =
+          (* TODO(T62825735): fully support trusted callees. Note that for inheritance
+             rule it doesn't make much difference, but would be nice to refactor anyway. *)
+          Models.get_modelled_annotated_signature ~is_callee_in_trust_list:false tenv
+            base_attributes
+        in
+        check_inheritance_rule_for_signature analysis_data
+          ~nullsafe_mode:annotated_signature.AnnotatedSignature.nullsafe_mode
+          find_canonical_duplicate loc ~base_proc_name ~base_signature
+          ~overridden_signature:annotated_signature
     | None ->
+        (* Could not find the attributes - optimistically skipping the check *)
+        (* TODO(T54687014) ensure this is not an issue in practice *)
         ()
   in
-  PatternMatch.override_iter check tenv proc_name
+  let proc_name = Procdesc.get_proc_name proc_desc in
+  (* Iterate over all methods the current method overrides and see the current
+     method is compatible with all of them *)
+  PatternMatch.override_iter check_if_base_signature_matches_current tenv proc_name

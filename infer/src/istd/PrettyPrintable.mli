@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -28,6 +28,12 @@ module type PrintableOrderedType = sig
   include Caml.Set.OrderedType
 
   include PrintableType with type t := t
+end
+
+module type PrintableEquatableOrderedType = sig
+  include Caml.Set.OrderedType
+
+  include PrintableEquatableType with type t := t
 end
 
 module type PPSet = sig
@@ -116,6 +122,10 @@ module type MonoMap = sig
   val mapi : (key -> value -> value) -> t -> t
 
   val is_singleton_or_more : t -> (key * value) IContainer.singleton_or_more
+
+  val fold_map : t -> init:'a -> f:('a -> value -> 'a * value) -> 'a * t
+
+  val of_seq : (key * value) Seq.t -> t
 end
 
 module type PPMap = sig
@@ -151,14 +161,20 @@ module MakePPMonoMap (Ord : PrintableOrderedType) (Val : PrintableType) :
 module type PrintableRankedType = sig
   include PrintableType
 
+  val compare : t -> t -> int
+
   val equal : t -> t -> bool
 
-  val to_rank : t -> int
+  type rank
+
+  val to_rank : t -> rank
 end
 
 (** set where at most one element of a given rank can be present *)
 module type PPUniqRankSet = sig
   type t
+
+  type rank
 
   type elt
 
@@ -168,11 +184,15 @@ module type PPUniqRankSet = sig
 
   val equal : t -> t -> bool
 
-  val find_rank : t -> int -> elt option
+  val find_rank : t -> rank -> elt option
 
   val fold : t -> init:'accum -> f:('accum -> elt -> 'accum) -> 'accum
 
+  val fold_map : t -> init:'accum -> f:('accum -> elt -> 'accum * elt) -> 'accum * t
+
   val is_empty : t -> bool
+
+  val is_singleton : t -> bool
 
   val is_subset : t -> of_:t -> bool
 
@@ -180,11 +200,18 @@ module type PPUniqRankSet = sig
 
   val singleton : elt -> t
 
+  val elements : t -> elt list
+
+  val remove : elt -> t -> t
+
   val union_prefer_left : t -> t -> t
   (** in case an element with the same rank is present both in [lhs] and [rhs], keep the one from
-     [lhs] in [union_prefer_left lhs rhs] *)
+      [lhs] in [union_prefer_left lhs rhs] *)
 
-  val pp : F.formatter -> t -> unit
+  val pp : ?print_rank:bool -> F.formatter -> t -> unit
 end
 
-module MakePPUniqRankSet (Val : PrintableRankedType) : PPUniqRankSet with type elt = Val.t
+module MakePPUniqRankSet
+    (Rank : PrintableEquatableOrderedType)
+    (Val : PrintableRankedType with type rank = Rank.t) :
+  PPUniqRankSet with type elt = Val.t and type rank = Rank.t

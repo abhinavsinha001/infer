@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,46 +8,20 @@
 #include <mutex>
 
 namespace constructor_formals {
-
-struct Y {
-  Y() : rawStatus_(-3) {}
-  Y(const Y& p) = default;
-  Y& operator=(const Y& p) = default;
-  Y(Y&& p) noexcept : rawStatus_(p.rawStatus_) { p.rawStatus_ = -3; }
-
-  int rawStatus_;
-};
-
-struct S {
-  Y w() { return returnCode; }
-
-  Y returnCode;
-};
-
-struct SU {
-  void p() {
-    S s;
-    auto result = s.w();
-  }
-};
-
 class Basic {
  public:
-  Basic() {}
+  // there can be a race here between the initializer read and the set function
+  // below
+  Basic(Basic& other) : field_(other.field_) {}
 
-  int test_locked() {
-    SU su;
+  void FN_set_under_lock_bad(int value) {
     mutex_.lock();
-    su.p();
-  }
-
-  int test_not_locked() {
-    SU su;
-    su.p(); // FP fixed after adding ownership to formal parameters of
-            // constructors
+    field_ = value;
+    mutex_.unlock();
   }
 
  private:
   std::mutex mutex_;
+  int field_;
 };
 } // namespace constructor_formals

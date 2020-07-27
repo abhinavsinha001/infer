@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -22,6 +22,11 @@ struct S {
   // operator= is called
 
   ~S() { delete f; }
+
+  void reinit(S s) {
+    f = new int;
+    *f = *(s.f);
+  }
 };
 
 // destructor called at end of function, no issues
@@ -34,7 +39,14 @@ void nested_scope_destructor_ok() {
 int reinit_after_explicit_destructor_ok() {
   S s(1);
   s.~S();
-  s = S(2);
+  s.reinit(S(2));
+  return *s.f;
+}
+
+int reinit_after_explicit_destructor_bad() {
+  S s(1);
+  s.~S();
+  s = S(2); // a temporary is created then operator= is called
   return *s.f;
 }
 
@@ -85,11 +97,10 @@ void use_after_scope1_bad() {
   // destructor for s here; second time the value held by s has been destructed
 }
 
-void FN_use_after_scope2_bad() {
+// same as above
+void use_after_scope2_bad() {
   S s(1);
-  {
-    s = S(1);
-  } // destructor runs here, but our frontend currently doesn't insert it
+  { s = S(1); }
 }
 
 struct POD {
@@ -254,8 +265,9 @@ std::unique_ptr<A>* allocate_in_branch_ok(bool b) {
 std::string mk_string();
 
 bool variable_init_ternary_ok(bool b) {
-  // this can cause issues because of the way the frontend treatment of ternary ?: interacts with
-  // the treatment of passing return values by reference as parameters
+  // this can cause issues because of the way the frontend treatment of ternary
+  // ?: interacts with the treatment of passing return values by reference as
+  // parameters
   std::string newPath = b ? "" : mk_string();
 }
 

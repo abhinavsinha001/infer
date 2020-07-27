@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -14,11 +14,11 @@ module F = Format
 type translation_unit = SourceFile.t option [@@deriving compare]
 
 (** Type for program variables. There are 4 kinds of variables:
-        1) local variables, used for local variables and formal parameters
-        2) callee program variables, used to handle recursion ([x | callee] is distinguished from [x])
-        3) global variables
-        4) seed variables, used to store the initial value of formal parameters
-*)
+
+    + local variables, used for local variables and formal parameters
+    + callee program variables, used to handle recursion ([x | callee] is distinguished from [x])
+    + global variables
+    + seed variables, used to store the initial value of formal parameters *)
 type t [@@deriving compare]
 
 val compare_modulo_this : t -> t -> int
@@ -27,7 +27,7 @@ val compare_modulo_this : t -> t -> int
 val equal : t -> t -> bool
 (** Equality for pvar's *)
 
-val get_declaring_function : t -> Typ.Procname.t option
+val get_declaring_function : t -> Procname.t option
 (** if not a global, return function declaring var *)
 
 val d : t -> unit
@@ -36,10 +36,10 @@ val d : t -> unit
 val get_name : t -> Mangled.t
 (** Get the name component of a program variable. *)
 
-val get_ret_pvar : Typ.Procname.t -> t
+val get_ret_pvar : Procname.t -> t
 (** [get_ret_pvar proc_name] retuns the return pvar associated with the procedure name *)
 
-val get_ret_param_pvar : Typ.Procname.t -> t
+val get_ret_param_pvar : Procname.t -> t
 (** [get_ret_param_pvar proc_name] retuns the return_param pvar associated with the procedure name *)
 
 val get_simplified_name : t -> string
@@ -56,6 +56,9 @@ val is_global : t -> bool
 
 val is_static_local : t -> bool
 (** Check if the pvar is a static variable declared inside a function *)
+
+val is_constant_array : t -> bool
+(** Check if the pvar has a constant array type *)
 
 val is_local : t -> bool
 (** Check if the pvar is a (non-static) local var *)
@@ -83,20 +86,27 @@ val is_ssa_frontend_tmp : t -> bool
     once on a non-looping control-flow path *)
 
 val is_cpp_temporary : t -> bool
-(** return true if this pvar represents a C++ temporary object (see http://en.cppreference.com/w/cpp/language/lifetime) *)
+(** return true if this pvar represents a C++ temporary object (see
+    http://en.cppreference.com/w/cpp/language/lifetime) *)
 
-val mk : Mangled.t -> Typ.Procname.t -> t
-(** [mk name proc_name suffix] creates a program var with the given function name and suffix *)
+val is_objc_static_local_of_proc_name : string -> t -> bool
+(** Check if a pvar is a local static in objc *)
 
-val mk_abduced_ref_param : Typ.Procname.t -> int -> Location.t -> t
+val is_block_pvar : t -> bool
+(** Check if a pvar is a local pointing to a block in objc *)
+
+val mk : Mangled.t -> Procname.t -> t
+(** [mk name proc_name] creates a program var with the given function name *)
+
+val mk_abduced_ref_param : Procname.t -> int -> Location.t -> t
 (** create an abduced variable for a parameter passed by reference *)
 
-val mk_abduced_ret : Typ.Procname.t -> Location.t -> t
+val mk_abduced_ret : Procname.t -> Location.t -> t
 (** create an abduced return variable for a call to [proc_name] at [loc] *)
 
-val mk_callee : Mangled.t -> Typ.Procname.t -> t
-(** [mk_callee name proc_name] creates a program var
-    for a callee function with the given function name *)
+val mk_callee : Mangled.t -> Procname.t -> t
+(** [mk_callee name proc_name] creates a program var for a callee function with the given function
+    name *)
 
 val mk_global :
      ?is_constexpr:bool
@@ -104,12 +114,13 @@ val mk_global :
   -> ?is_pod:bool
   -> ?is_static_local:bool
   -> ?is_static_global:bool
+  -> ?is_constant_array:bool
   -> ?translation_unit:SourceFile.t
   -> Mangled.t
   -> t
 (** create a global variable with the given name *)
 
-val mk_tmp : string -> Typ.Procname.t -> t
+val mk_tmp : string -> Procname.t -> t
 (** create a fresh temporary variable local to procedure [pname]. for use in the frontends only! *)
 
 val pp : Pp.env -> F.formatter -> t -> unit
@@ -118,9 +129,12 @@ val pp : Pp.env -> F.formatter -> t -> unit
 val pp_value : F.formatter -> t -> unit
 (** Pretty print a pvar which denotes a value, not an address *)
 
+val pp_value_non_verbose : F.formatter -> t -> unit
+(** Non-verbose version of pp_value *)
+
 val pp_translation_unit : F.formatter -> translation_unit -> unit
 
-val to_callee : Typ.Procname.t -> t -> t
+val to_callee : Procname.t -> t -> t
 (** Turn an ordinary program variable into a callee program variable *)
 
 val to_seed : t -> t
@@ -144,11 +158,20 @@ val is_pod : t -> bool
 (** Is the variable's type a "Plain Old Data" type (C++)? Always (potentially incorrectly) returns
     [true] for non-globals. *)
 
-val get_initializer_pname : t -> Typ.Procname.t option
+val get_initializer_pname : t -> Procname.t option
 (** Get the procname of the initializer function for the given global variable *)
 
 val get_name_of_local_with_procname : t -> Mangled.t
-(** [get_name_of_local_with_procname var] Return a name that is composed of the name of
-var and the name of the procname in case of locals *)
+(** [get_name_of_local_with_procname var] Return a name that is composed of the name of var and the
+    name of the procname in case of locals *)
 
 val materialized_cpp_temporary : string
+
+val rename : f:(string -> string) -> t -> t
+
+(** Sets of pvars. *)
+module Set : PrettyPrintable.PPSet with type elt = t
+
+type capture_mode = ByReference | ByValue [@@deriving compare]
+
+val string_of_capture_mode : capture_mode -> string

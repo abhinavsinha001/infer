@@ -1,16 +1,15 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *)
 
 open! IStd
+open Predicates
 
 (** Functions for Propositions (i.e., Symbolic Heaps) *)
-
-open Sil
 
 (** kind for normal props, i.e. normalized *)
 type normal
@@ -23,14 +22,14 @@ type sorted
 
 (** Proposition. *)
 
-type pi = Sil.atom list
+type pi = atom list
 
-type sigma = Sil.hpred list
+type sigma = hpred list
 
 (** the kind 'a should range over [normal] and [exposed] *)
 type 'a t = private
   { sigma: sigma  (** spatial part *)
-  ; sub: Sil.subst  (** substitution *)
+  ; sub: subst  (** substitution *)
   ; pi: pi  (** pure part *)
   ; sigma_fp: sigma  (** abduced spatial part *)
   ; pi_fp: pi  (** abduced pure part *) }
@@ -42,6 +41,9 @@ type 'a t = private
 type struct_init_mode = No_init | Fld_init
 
 (** {2 Basic Functions for propositions} *)
+
+val has_footprint : 'a t -> bool
+(** sigma_fp is nonempty or pi_fp is nonempty *)
 
 val compare_prop : 'a t -> 'a t -> int
 (** Compare propositions *)
@@ -65,8 +67,8 @@ val d_pi_sigma : pi -> sigma -> unit
 (** Dump a pi and a sigma *)
 
 val sigma_get_stack_nonstack : bool -> sigma -> sigma * sigma
-(** Split sigma into stack and nonstack parts.
-    The boolean indicates whether the stack should only include local variales. *)
+(** Split sigma into stack and nonstack parts. The boolean indicates whether the stack should only
+    include local variales. *)
 
 val prop_update_obj_sub : Pp.env -> 'a t -> Pp.env
 (** Update the object substitution given the stack variables in the prop *)
@@ -74,7 +76,7 @@ val prop_update_obj_sub : Pp.env -> 'a t -> Pp.env
 val pp_prop : Pp.env -> Format.formatter -> 'a t -> unit
 (** Pretty print a proposition. *)
 
-val prop_pred_env : 'a t -> Sil.Predicates.env
+val prop_pred_env : 'a t -> Predicates.Env.t
 (** Create a predicate environment for a prop *)
 
 val d_prop : 'a t -> unit
@@ -111,42 +113,41 @@ val prop_expmap : (Exp.t -> Exp.t) -> 'a t -> exposed t
 (** Apply the substitution to all the expressions in the prop. *)
 
 val sigma_replace_exp : Tenv.t -> (Exp.t * Exp.t) list -> hpred list -> hpred list
-(** Relaces all expressions in the [hpred list] using the first argument.
-    Assume that the first parameter defines a partial function.
-    No expressions inside hpara are replaced. *)
+(** Relaces all expressions in the [hpred list] using the first argument. Assume that the first
+    parameter defines a partial function. No expressions inside hpara are replaced. *)
 
 (** {2 Normalization} *)
 
-val mk_inequality : Tenv.t -> Exp.t -> Sil.atom
+val mk_inequality : Tenv.t -> Exp.t -> atom
 (** Turn an inequality expression into an atom *)
 
-val atom_is_inequality : Sil.atom -> bool
+val atom_is_inequality : atom -> bool
 (** Return [true] if the atom is an inequality *)
 
-val atom_exp_le_const : Sil.atom -> (Exp.t * IntLit.t) option
+val atom_exp_le_const : atom -> (Exp.t * IntLit.t) option
 (** If the atom is [e<=n] return [e,n] *)
 
-val atom_const_lt_exp : Sil.atom -> (IntLit.t * Exp.t) option
+val atom_const_lt_exp : atom -> (IntLit.t * Exp.t) option
 (** If the atom is [n<e] return [n,e] *)
 
 val exp_normalize_prop : ?destructive:bool -> Tenv.t -> 'a t -> Exp.t -> Exp.t
-(** Normalize [exp] using the pure part of [prop].  Later, we should change this such that the
+(** Normalize [exp] using the pure part of [prop]. Later, we should change this such that the
     normalization exposes offsets of [exp] as much as possible.
 
     If [destructive] is true then normalize more aggressively, which may lose some useful structure
     or types. *)
 
-val exp_normalize_noabs : Tenv.t -> Sil.subst -> Exp.t -> Exp.t
+val exp_normalize_noabs : Tenv.t -> subst -> Exp.t -> Exp.t
 (** Normalize the expression without abstracting complex subexpressions *)
 
 val exp_collapse_consecutive_indices_prop : Typ.t -> Exp.t -> Exp.t
-(** Collapse consecutive indices that should be added. For instance,
-    this function reduces [x[1][1]] to [x[2]]. The [typ] argument is used
-    to ensure the soundness of this collapsing. *)
+(** Collapse consecutive indices that should be added. For instance, this function reduces
+    [x\[1\]\[1\]] to [x\[2\]]. The [typ] argument is used to ensure the soundness of this
+    collapsing. *)
 
 val lexp_normalize_prop : Tenv.t -> 'a t -> Exp.t -> Exp.t
-(** Normalize [exp] used for the address of a heap cell.
-    This normalization does not combine two offsets inside [exp]. *)
+(** Normalize [exp] used for the address of a heap cell. This normalization does not combine two
+    offsets inside [exp]. *)
 
 val atom_normalize_prop : Tenv.t -> 'a t -> atom -> atom
 
@@ -182,21 +183,19 @@ val mk_pred : Tenv.t -> PredSymb.t -> Exp.t list -> atom
 val mk_npred : Tenv.t -> PredSymb.t -> Exp.t list -> atom
 (** Construct a negative pred. *)
 
-val create_strexp_of_type :
-  Tenv.t -> struct_init_mode -> Typ.t -> Exp.t option -> Sil.inst -> Sil.strexp
+val create_strexp_of_type : Tenv.t -> struct_init_mode -> Typ.t -> Exp.t option -> inst -> strexp
 (** create a strexp of the given type, populating the structures if [expand_structs] is true *)
 
 val mk_ptsto : Tenv.t -> Exp.t -> strexp -> Exp.t -> hpred
 (** Construct a pointsto. *)
 
-val mk_ptsto_exp : Tenv.t -> struct_init_mode -> Exp.t * Exp.t * Exp.t option -> Sil.inst -> hpred
+val mk_ptsto_exp : Tenv.t -> struct_init_mode -> Exp.t * Exp.t * Exp.t option -> inst -> hpred
 (** Construct a points-to predicate for an expression using either the provided expression [name] as
     base for fresh identifiers. *)
 
-val mk_ptsto_lvar :
-  Tenv.t -> struct_init_mode -> Sil.inst -> Pvar.t * Exp.t * Exp.t option -> hpred
-(** Construct a points-to predicate for a single program variable.
-    If [expand_structs] is true, initialize the fields of structs with fresh variables. *)
+val mk_ptsto_lvar : Tenv.t -> struct_init_mode -> inst -> Pvar.t * Exp.t * Exp.t option -> hpred
+(** Construct a points-to predicate for a single program variable. If [expand_structs] is true,
+    initialize the fields of structs with fresh variables. *)
 
 val mk_lseg : Tenv.t -> lseg_kind -> hpara -> Exp.t -> Exp.t -> Exp.t list -> hpred
 (** Construct a lseg predicate *)
@@ -208,7 +207,7 @@ val mk_dllseg :
 val prop_emp : normal t
 (** Proposition [true /\ emp]. *)
 
-val prop_reset_inst : (Sil.inst -> Sil.inst) -> 'a t -> exposed t
+val prop_reset_inst : (inst -> inst) -> 'a t -> exposed t
 (** Reset every inst in the prop using the given map *)
 
 val prop_hpred_star : 'a t -> hpred -> exposed t
@@ -259,8 +258,7 @@ val from_pi : pi -> exposed t
 val from_sigma : sigma -> exposed t
 (** Build an exposed prop from sigma *)
 
-val set :
-  ?sub:Sil.subst -> ?pi:pi -> ?sigma:sigma -> ?pi_fp:pi -> ?sigma_fp:sigma -> 'a t -> exposed t
+val set : ?sub:subst -> ?pi:pi -> ?sigma:sigma -> ?pi_fp:pi -> ?sigma_fp:sigma -> 'a t -> exposed t
 (** Set individual fields of the prop. *)
 
 (** {2 Prop iterators} *)
@@ -275,13 +273,12 @@ val prop_iter_to_prop : Tenv.t -> 'a prop_iter -> normal t
 (** Return the prop associated to the iterator. *)
 
 val prop_iter_add_atom : bool -> 'a prop_iter -> atom -> 'a prop_iter
-(** Add an atom to the pi part of prop iter. The
-    first parameter records whether it is done
-    during footprint or during re - execution. *)
+(** Add an atom to the pi part of prop iter. The first parameter records whether it is done during
+    footprint or during re - execution. *)
 
 val prop_iter_remove_curr_then_to_prop : Tenv.t -> 'a prop_iter -> normal t
-(** Remove the current element from the iterator, and return the prop
-    associated to the resulting iterator. *)
+(** Remove the current element from the iterator, and return the prop associated to the resulting
+    iterator. *)
 
 val prop_iter_current : Tenv.t -> 'a prop_iter -> hpred * 'a
 (** Return the current hpred and state. *)

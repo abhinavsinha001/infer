@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -18,6 +18,11 @@ class ScopeGuard {};
 namespace dead_stores {
 
 void easy_bad() { int x = 5; }
+
+void throw_bad() {
+  int i = 20;
+  throw 1;
+}
 
 void reassign_param_bad(int x) { x = 5; }
 
@@ -432,9 +437,8 @@ class Exceptions {
     return 0;
   }
 
-  // currently, the only transition to the catch block is at the end of the try
-  // block
-  int FP_read_in_catch_tricky_ok(bool b1, bool b2) {
+  // the transition to the catch block is set at pre-analysis
+  int read_in_catch_tricky_ok(bool b1, bool b2) {
     int i = 1;
     try {
       if (b1) {
@@ -450,6 +454,42 @@ class Exceptions {
     return 0;
   }
 
+  int read_in_loop_tricky_ok(bool b) {
+    int i = 1;
+    for (int p = 0; p <= 5; p++) {
+      try {
+        if (b) {
+          throw std::runtime_error("error");
+        }
+      } catch (...) {
+        return i;
+      }
+    }
+
+    return 0;
+  }
+
+  void read_in_goto_ok(bool b) {
+    int i = 1;
+    try {
+      if (b) {
+        throw std::runtime_error("error");
+
+        goto A;
+      } else {
+
+        goto B;
+      }
+    A:
+      goto B;
+    B:
+      goto A;
+    }
+
+    catch (...) {
+      return i;
+    }
+  }
   int return_in_try1_ok() {
     bool b;
 
@@ -508,9 +548,8 @@ struct A {
   int f : 4;
 };
 
-int decltype_read_ok_FP(int x) {
-  A a; // reports here as frontend forgets the expression used in decltype below
-       // a solution would be to annotate with __unused__ (T26148700)
+int decltype_read_ok(int x) {
+  A a;
   decltype(a.f) i;
   return x + i;
 }

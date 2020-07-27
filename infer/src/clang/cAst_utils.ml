@@ -1,12 +1,11 @@
 (*
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *)
 
 open! IStd
-open PolyVariantEqual
 
 (** Functions for transformations of ast nodes *)
 
@@ -17,9 +16,9 @@ type qual_type_to_sil_type = Tenv.t -> Clang_ast_t.qual_type -> Typ.t
 type procname_from_decl =
      ?tenv:Tenv.t
   -> ?block_return_type:Clang_ast_t.qual_type
-  -> ?outer_proc:Typ.Procname.t
+  -> ?outer_proc:Procname.t
   -> Clang_ast_t.decl
-  -> Typ.Procname.t
+  -> Procname.t
 
 let sanitize_name s = Str.global_replace (Str.regexp "[/ ]") "_" s
 
@@ -31,7 +30,7 @@ let get_qualified_name ?(linters_mode = false) name_info =
   if not linters_mode then get_qual_name name_info.Clang_ast_t.ni_qual_name
   else
     (* Because we are in linters mode, we can't get precise info about templates,
-        so we strip the template characters to not upset invariants in the system. *)
+       so we strip the template characters to not upset invariants in the system. *)
     let replace_template_chars qual_name =
       String.tr ~target:'<' ~replacement:'_' qual_name |> String.tr ~target:'>' ~replacement:'_'
     in
@@ -111,21 +110,30 @@ let get_decl_opt decl_ptr_opt =
 let get_stmt stmt_ptr source_range =
   let stmt = Int.Table.find ClangPointers.pointer_stmt_table stmt_ptr in
   if Option.is_none stmt then
-    CFrontend_config.incorrect_assumption __POS__ source_range "stmt with pointer %d not found@\n"
+    CFrontend_errors.incorrect_assumption __POS__ source_range "stmt with pointer %d not found@\n"
       stmt_ptr ;
   stmt
+
+
+let get_stmt_exn stmt_ptr source_range =
+  match get_stmt stmt_ptr source_range with
+  | Some stmt ->
+      stmt
+  | None ->
+      L.die InternalError "statement clang pointer %d not found" stmt_ptr
 
 
 let get_stmt_opt stmt_ptr_opt source_range =
   match stmt_ptr_opt with Some stmt_ptr -> get_stmt stmt_ptr source_range | None -> None
 
 
-let get_decl_opt_with_decl_ref decl_ref_opt =
-  match decl_ref_opt with
-  | Some decl_ref ->
-      get_decl decl_ref.Clang_ast_t.dr_decl_pointer
-  | None ->
-      None
+let get_decl_opt_with_decl_ref decl_ref =
+  L.debug Capture Verbose "#####POINTER LOOK UP: '%i'@\n" decl_ref.Clang_ast_t.dr_decl_pointer ;
+  get_decl decl_ref.Clang_ast_t.dr_decl_pointer
+
+
+let get_decl_opt_with_decl_ref_opt decl_ref_opt =
+  Option.bind decl_ref_opt ~f:get_decl_opt_with_decl_ref
 
 
 let get_property_of_ivar decl_ptr = Int.Table.find ClangPointers.ivar_to_property_table decl_ptr
@@ -135,24 +143,22 @@ let update_sil_types_map type_ptr sil_type =
     Clang_ast_extend.TypePointerMap.add type_ptr sil_type !CFrontend_config.sil_types_map
 
 
-let update_enum_map enum_constant_pointer sil_exp =
+let update_enum_map_exn enum_constant_pointer sil_exp =
   let predecessor_pointer_opt, _ =
     ClangPointers.Map.find_exn !CFrontend_config.enum_map enum_constant_pointer
   in
   let enum_map_value = (predecessor_pointer_opt, Some sil_exp) in
   CFrontend_config.enum_map :=
-    ClangPointers.Map.set !CFrontend_config.enum_map ~key:enum_constant_pointer
-      ~data:enum_map_value
+    ClangPointers.Map.set !CFrontend_config.enum_map ~key:enum_constant_pointer ~data:enum_map_value
 
 
 let add_enum_constant enum_constant_pointer predecessor_pointer_opt =
   let enum_map_value = (predecessor_pointer_opt, None) in
   CFrontend_config.enum_map :=
-    ClangPointers.Map.set !CFrontend_config.enum_map ~key:enum_constant_pointer
-      ~data:enum_map_value
+    ClangPointers.Map.set !CFrontend_config.enum_map ~key:enum_constant_pointer ~data:enum_map_value
 
 
-let get_enum_constant_exp enum_constant_pointer =
+let get_enum_constant_exp_exn enum_constant_pointer =
   ClangPointers.Map.find_exn !CFrontend_config.enum_map enum_constant_pointer
 
 
@@ -200,11 +206,10 @@ let sil_annot_of_type {Clang_ast_t.qt_type_ptr} =
   in
   let annot_name_opt =
     match get_type qt_type_ptr with
-    | Some (AttributedType (_, attr_info)) ->
-        if attr_info.ati_attr_kind = `Nullable then Some Annotations.nullable
-        else if attr_info.ati_attr_kind = `Nonnull then Some Annotations.nonnull
-          (* other annotations go here *)
-        else None
+    | Some (AttributedType (_, {ati_attr_kind= TypeNullableAttrKind})) ->
+        Some Annotations.nullable
+    | Some (AttributedType (_, {ati_attr_kind= TypeNonNullAttrKind})) ->
+        Some Annotations.nonnull
     | _ ->
         None
   in
@@ -229,7 +234,7 @@ let name_opt_of_typedef_qual_type qual_type =
 
 let qual_type_of_decl_ptr decl_ptr =
   { (* This function needs to be in this module - CAst_utils can't depend on
-     Ast_expressions *)
+       Ast_expressions *)
     Clang_ast_t.qt_type_ptr= Clang_ast_extend.DeclPtr decl_ptr
   ; qt_is_const= false
   ; qt_is_volatile= false
@@ -331,7 +336,8 @@ let generate_key_stmt stmt =
     let _, stmts = Clang_ast_proj.get_stmt_tuple stmt in
     List.iter ~f:add_stmt stmts
   in
-  add_stmt stmt ; Buffer.contents buffer
+  add_stmt stmt ;
+  Buffer.contents buffer
 
 
 (* Generates a key for a declaration based on its name and the declaration tag. *)
@@ -345,24 +351,24 @@ let rec get_super_if decl =
   | Some (Clang_ast_t.ObjCImplementationDecl (_, _, _, _, impl_decl_info)) ->
       (* Try getting the super ref through the impl info, and fall back to
          getting the if decl first and getting the super ref through it. *)
-      let super_ref = get_decl_opt_with_decl_ref impl_decl_info.oidi_super in
+      let super_ref = get_decl_opt_with_decl_ref_opt impl_decl_info.oidi_super in
       if Option.is_some super_ref then super_ref
-      else get_super_if (get_decl_opt_with_decl_ref impl_decl_info.oidi_class_interface)
+      else get_super_if (get_decl_opt_with_decl_ref_opt impl_decl_info.oidi_class_interface)
   | Some (Clang_ast_t.ObjCInterfaceDecl (_, _, _, _, interface_decl_info)) ->
-      get_decl_opt_with_decl_ref interface_decl_info.otdi_super
+      get_decl_opt_with_decl_ref_opt interface_decl_info.otdi_super
   | _ ->
       None
 
 
 let get_super_ObjCImplementationDecl impl_decl_info =
   let objc_interface_decl_current =
-    get_decl_opt_with_decl_ref impl_decl_info.Clang_ast_t.oidi_class_interface
+    get_decl_opt_with_decl_ref_opt impl_decl_info.Clang_ast_t.oidi_class_interface
   in
   let objc_interface_decl_super = get_super_if objc_interface_decl_current in
   let objc_implementation_decl_super =
     match objc_interface_decl_super with
     | Some (ObjCInterfaceDecl (_, _, _, _, interface_decl_info)) ->
-        get_decl_opt_with_decl_ref interface_decl_info.otdi_implementation
+        get_decl_opt_with_decl_ref_opt interface_decl_info.otdi_implementation
     | _ ->
         None
   in
@@ -441,14 +447,6 @@ let is_objc_factory_method ~class_decl:interface_decl ~method_decl:meth_decl_opt
       && return_type_matches_class_type omdi.omdi_result_type interface_decl
   | _ ->
       false
-
-
-let name_of_decl_ref_opt (decl_ref_opt : Clang_ast_t.decl_ref option) =
-  match decl_ref_opt with
-  | Some decl_ref -> (
-    match decl_ref.dr_name with Some named_decl_info -> Some named_decl_info.ni_name | _ -> None )
-  | _ ->
-      None
 
 
 let type_of_decl decl =
@@ -545,9 +543,16 @@ let has_block_attribute decl =
   match decl with
   | VarDecl (decl_info, _, _, _) ->
       let attributes = decl_info.di_attributes in
-      List.exists ~f:(fun attr -> match attr with BlocksAttr _ -> true | _ -> false) attributes
+      List.exists ~f:(fun attr -> match attr with `BlocksAttr _ -> true | _ -> false) attributes
   | _ ->
       false
+
+
+(* true if a decl has a NS_NOESCAPE attribute *)
+let is_no_escape_block_arg decl =
+  let has_noescape_attr attr = match attr with `NoEscapeAttr _ -> true | _ -> false in
+  let attrs = (Clang_ast_proj.get_decl_tuple decl).di_attributes in
+  List.exists attrs ~f:has_noescape_attr
 
 
 let is_implicit_decl decl =
@@ -569,8 +574,8 @@ let get_superclass_curr_class_objc_from_decl (decl : Clang_ast_t.decl) =
         otdi.otdi_super
     | _ ->
         Logging.die InternalError
-          "Expected that ObjCImplementationDecl always has a pointer to it's interface, but \
-           wasn't the case with %s"
+          "Expected that ObjCImplementationDecl always has a pointer to it's interface, but wasn't \
+           the case with %s"
           ni.Clang_ast_t.ni_name )
   | ObjCCategoryDecl (_, _, _, _, ocdi) ->
       ocdi.odi_class_interface
@@ -580,4 +585,22 @@ let get_superclass_curr_class_objc_from_decl (decl : Clang_ast_t.decl) =
       Logging.die InternalError
         "Expected to be called only with ObjCInterfaceDecl, ObjCImplementationDecl, \
          ObjCCategoryDecl or ObjCCategoryImplDecl, but got %s"
+        (Clang_ast_proj.get_decl_kind_string decl)
+
+
+let get_method_body_opt decl =
+  let open Clang_ast_t in
+  match decl with
+  | FunctionDecl (_, _, _, fdi)
+  | CXXMethodDecl (_, _, _, fdi, _)
+  | CXXConstructorDecl (_, _, _, fdi, _)
+  | CXXConversionDecl (_, _, _, fdi, _)
+  | CXXDestructorDecl (_, _, _, fdi, _) ->
+      fdi.Clang_ast_t.fdi_body
+  | ObjCMethodDecl (_, _, mdi) ->
+      mdi.Clang_ast_t.omdi_body
+  | BlockDecl (_, block_decl_info) ->
+      block_decl_info.Clang_ast_t.bdi_body
+  | _ ->
+      Logging.die InternalError "Should only be called with method, but got %s"
         (Clang_ast_proj.get_decl_kind_string decl)

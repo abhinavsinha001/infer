@@ -1,4 +1,4 @@
-# Copyright (c) 2018-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -6,66 +6,80 @@
 .PHONY: default
 default: exes
 
-DUNEINS=$(shell find src -name dune.in)
-DUNES=$(patsubst %.in,%,$(DUNEINS))
+EXES = bin/sledge_cli
+INSTALLS = sledge
 
-.PHONY: dunes
-dunes: $(DUNES)
+DEBUG_TARGETS = $(patsubst %,_build/debug/%.exe,$(EXES)) $(patsubst %,_build/debug/%.install,$(INSTALLS))
 
-%/dune: dune-common.in %/dune.in
-	@cat $+ > $@
+TARGETS = $(DEBUG_TARGETS) $(subst debug,trace,$(DEBUG_TARGETS)) $(subst debug,release,$(DEBUG_TARGETS)) _build/release/sledge-help.txt
 
-.PHONY: setup
-setup: dunes
+dune_build_debug = dune build $(DEBUG_TARGETS)
+dune_install_debug = dune install --context=debug --prefix=_build/_install/debug sledge 2>/dev/null
+
+dune_build_debug_release = $(subst debug,trace,$(dune_build_debug))
+dune_install_debug_release = $(subst debug,trace,$(dune_install_debug))
+
+dune_build_release = $(subst debug,release,$(dune_build_debug))
+dune_install_release = $(subst debug,release,$(dune_install_debug))
 
 .PHONY: check
-check: setup
+check:
 	dune build @check
 
 .PHONY: exes
-exes: setup
-	dune build _build/dev/src/sledge.exe _build/release/src/sledge.exe _build/dev/sledge.install _build/release/sledge.install
+exes:
+	dune build $(TARGETS)
+	$(dune_install_debug)
+	$(dune_install_debug_release)
+	$(dune_install_release)
 
-.PHONY: dbg
-dbg: setup
-	dune build _build/dev/src/sledge.exe _build/dev/sledge.install
+.PHONY: debug
+debug:
+	$(dune_build_debug)
+	$(dune_install_debug)
 
-.PHONY: opt
-opt: setup
-	dune build _build/release/src/sledge.exe _build/release/sledge.install
+.PHONY: trace
+trace:
+	$(dune_build_debug_release)
+	$(dune_install_debug_release)
+
+.PHONY: release
+release:
+	$(dune_build_release)
+	$(dune_install_release)
 
 .PHONY: watch
-watch: setup
-	dune build --watch _build/dev/src/sledge.exe _build/release/src/sledge.exe
+watch:
+	dune build --watch --terminal-persistence=clear-on-rebuild $(TARGETS)
 
 .PHONY: test
-test: setup
-	dune build @_build/dev/runtest
+test:
+	-dune build @_build/debug/runtest --auto-promote
+	dune build @_build/debug/fmt --auto-promote 2>/dev/null
 
-.PHONY: promote
-promote: setup
-	dune build @_build/dev/runtest --auto-promote
-
-BISECT_DIR=$(CURDIR)/_coverage/out
-
-.PHONY: coverage
-coverage: setup
-	@rm -rf _coverage
-	@mkdir -p $(BISECT_DIR)
-	@BISECT_FILE=$(BISECT_DIR)/bisect dune build --force @_build/coverage/runtest
-	@find $(BISECT_DIR) -type f | xargs bisect-ppx-report -I _build/coverage/ -text _coverage/summary.txt -html _coverage/
-	@echo "open _coverage/index.html"
+.PHONY: ci-test
+ci-test:
+	dune build @_build/debug/runtest
 
 .PHONY: clean
 clean:
 	dune clean
-	rm -rf _coverage $(DUNES)
 
 .PHONY: fmt
 fmt:
-	dune build @_build/dev/src/fmt --auto-promote
-	ocamlformat -i src/version.ml.in $(DUNEINS)
+	-dune build @_build/debug/fmt --auto-promote 2>/dev/null
+	tmp=$(mktemp -t 'dune-format'); dune format-dune-file dune-project > tmp; mv -f tmp dune-project
+	tmp=$(mktemp -t 'dune-format'); dune format-dune-file ics/dune-project > tmp; mv -f tmp ics/dune-project
+	tmp=$(mktemp -t 'dune-format'); dune format-dune-file dune-workspace > tmp; mv -f tmp dune-workspace
 	clang-format -i model/llair_intrinsics.h model/cxxabi.cpp
+	${MAKE} -C test fmt
+
+OCAMLFORMAT_EXE = ocamlformat
+OCAMLFORMAT_ARGS =
+
+.PHONY: fmt_all
+fmt_all:
+	parallel $(OCAMLFORMAT_EXE) $(OCAMLFORMAT_ARGS) -i ::: $(shell find * \( -name _build -or -name llvm \) -not -prune -or \( -name '*'.ml -or -name '*'.mli \) -print 2>/dev/null)
 
 # print any variable for Makefile debugging
 print-%:

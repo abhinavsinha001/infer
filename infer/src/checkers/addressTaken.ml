@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -17,7 +17,7 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
   module CFG = CFG
   module Domain = Domain
 
-  type extras = ProcData.no_extras
+  type analysis_data = unit
 
   let rec add_address_taken_pvars exp astate =
     match exp with
@@ -35,8 +35,8 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
         astate
 
 
-  let exec_instr astate _ _ = function
-    | Sil.Store (_, {desc= Tptr _}, rhs_exp, _) ->
+  let exec_instr astate () _ = function
+    | Sil.Store {typ= {desc= Tptr _}; e2= rhs_exp} ->
         add_address_taken_pvars rhs_exp astate
     | Sil.Call (_, _, actuals, _, _) ->
         let add_actual_by_ref astate_acc = function

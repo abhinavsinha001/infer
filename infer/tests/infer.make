@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -11,7 +11,7 @@ default: compile
 
 issues.exp.test$(TEST_SUFFIX): $(INFER_OUT)/report.json $(INFER_BIN)
 	$(QUIET)$(INFER_BIN) report -q --results-dir $(<D) \
-	   $(INFERPRINT_OPTIONS) $@ --from-json-report $<
+	   $(INFERPRINT_OPTIONS) $@
 
 .PHONY: compile
 compile: $(OBJECTS)

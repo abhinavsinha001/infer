@@ -1,4 +1,4 @@
-// Copyright (c) 2018-present, Facebook, Inc.
+// Copyright (c) Facebook, Inc. and its affiliates.
 //
 // This source code is licensed under the MIT license found in the
 // LICENSE file in the root directory of this source tree.
@@ -25,6 +25,20 @@ SET report_when =
 
 SET message = "Found static local var";
 
+};
+
+DEFINE-CHECKER FIND_STATIC_GLOBAL_VAR = {
+SET report_when =
+  WHEN is_static_var AND is_global_var
+  HOLDS-IN-NODE VarDecl;
+SET message = "Found a static global var";
+};
+
+DEFINE-CHECKER FIND_EXTERN_VAR = {
+SET report_when =
+  WHEN is_extern_var
+  HOLDS-IN-NODE VarDecl;
+SET message = "Found extern var";
 };
 
 DEFINE-CHECKER FIND_CXX_METHOD_OVERRIDES = {

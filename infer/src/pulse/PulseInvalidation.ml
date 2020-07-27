@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -37,56 +37,78 @@ let pp_std_vector_function f = function
       F.fprintf f "std::vector::shrink_to_fit"
 
 
+type java_iterator_function = Remove [@@deriving compare]
+
+let pp_java_iterator_function f = function Remove -> F.pp_print_string f "Iterator.remove"
+
 type t =
-  | CFree of HilExp.AccessExpression.t
-  | CppDelete of HilExp.AccessExpression.t
+  | CFree
+  | ConstantDereference of IntLit.t
+  | CppDelete
+  | EndIterator
   | GoneOutOfScope of Pvar.t * Typ.t
-  | Nullptr
-  | StdVector of std_vector_function * HilExp.AccessExpression.t
+  | OptionalEmpty
+  | StdVector of std_vector_function
+  | JavaIterator of java_iterator_function
 [@@deriving compare]
 
 let issue_type_of_cause = function
-  | CFree _ ->
+  | CFree ->
       IssueType.use_after_free
-  | CppDelete _ ->
+  | ConstantDereference i when IntLit.iszero i ->
+      IssueType.nullptr_dereference
+  | ConstantDereference _ ->
+      IssueType.constant_address_dereference
+  | CppDelete ->
       IssueType.use_after_delete
+  | EndIterator ->
+      IssueType.vector_invalidation
   | GoneOutOfScope _ ->
       IssueType.use_after_lifetime
-  | Nullptr ->
-      IssueType.null_dereference
-  | StdVector _ ->
+  | OptionalEmpty ->
+      IssueType.optional_empty_access
+  | JavaIterator _ | StdVector _ ->
       IssueType.vector_invalidation
 
 
-let describe f = function
-  | CFree access_expr ->
-      F.fprintf f "memory invalidated by call to `free()` on `%a`" HilExp.AccessExpression.pp
-        access_expr
-  | CppDelete access_expr ->
-      F.fprintf f "memory invalidated by `delete` on `%a`" HilExp.AccessExpression.pp access_expr
+let describe f cause =
+  match cause with
+  | CFree ->
+      F.pp_print_string f "was invalidated by call to `free()`"
+  | ConstantDereference i when IntLit.iszero i ->
+      F.pp_print_string f "is the null pointer"
+  | ConstantDereference i ->
+      F.fprintf f "is the constant %a" IntLit.pp i
+  | CppDelete ->
+      F.pp_print_string f "was invalidated by `delete`"
+  | EndIterator ->
+      F.pp_print_string f "is pointed to by the `end()` iterator"
   | GoneOutOfScope (pvar, typ) ->
       let pp_var f pvar =
         if Pvar.is_cpp_temporary pvar then
-          F.fprintf f "C++ temporary of type `%a`" (Typ.pp_full Pp.text) typ
-        else F.fprintf f "stack variable `%a`" Pvar.pp_value pvar
+          F.fprintf f "is the address of a C++ temporary of type `%a`" (Typ.pp_full Pp.text) typ
+        else F.fprintf f "is the address of a stack variable `%a`" Pvar.pp_value pvar
       in
-      F.fprintf f "address of %a whose lifetime has ended" pp_var pvar
-  | Nullptr ->
-      F.fprintf f "the null pointer"
-  | StdVector (std_vector_f, access_expr) ->
-      F.fprintf f "memory potentially invalidated by call to `%a()` on `%a`" pp_std_vector_function
-        std_vector_f HilExp.AccessExpression.pp access_expr
+      F.fprintf f "%a whose lifetime has ended" pp_var pvar
+  | OptionalEmpty ->
+      F.pp_print_string f "is folly::None"
+  | StdVector std_vector_f ->
+      F.fprintf f "was potentially invalidated by `%a()`" pp_std_vector_function std_vector_f
+  | JavaIterator java_iterator_f ->
+      F.fprintf f "was potentially invalidated by `%a()`" pp_java_iterator_function java_iterator_f
 
 
 let pp f invalidation =
   match invalidation with
-  | CFree _ ->
+  | CFree ->
       F.fprintf f "CFree(%a)" describe invalidation
-  | CppDelete _ ->
+  | ConstantDereference _ ->
+      F.fprintf f "ConstantDereference(%a)" describe invalidation
+  | CppDelete ->
       F.fprintf f "CppDelete(%a)" describe invalidation
-  | GoneOutOfScope _ ->
-      describe f invalidation
-  | Nullptr ->
+  | EndIterator | GoneOutOfScope _ | OptionalEmpty ->
       describe f invalidation
   | StdVector _ ->
       F.fprintf f "StdVector(%a)" describe invalidation
+  | JavaIterator _ ->
+      F.fprintf f "JavaIterator(%a)" describe invalidation

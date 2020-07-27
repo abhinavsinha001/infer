@@ -1,49 +1,36 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *)
-
 open! IStd
 module F = Format
+module CallEvent = PulseCallEvent
+module ValueHistory = PulseValueHistory
 
-type breadcrumb =
-  | VariableDeclaration of Location.t
-  | CppTemporaryCreated of Location.t
-  | Assignment of {lhs: HilExp.AccessExpression.t; location: Location.t}
-  | Capture of
-      { captured_as: AccessPath.base
-      ; captured: HilExp.AccessExpression.t
-      ; location: Location.t }
-  | Call of
-      { f: [`HilCall of HilInstr.call | `Model of string]
-      ; actuals: HilExp.t list
-      ; location: Location.t }
-
-type t = breadcrumb list [@@deriving compare]
-
-val pp : F.formatter -> t -> unit
-
-val add_errlog_of_trace :
-  nesting:int -> t -> Errlog.loc_trace_elem list -> Errlog.loc_trace_elem list
-
-val get_start_location : t -> Location.t option
-
-type 'a action =
-  | Immediate of {imm: 'a; location: Location.t}
-  | ViaCall of {action: 'a action; proc_name: Typ.Procname.t; location: Location.t}
+type t =
+  | Immediate of {location: Location.t; history: ValueHistory.t}
+  | ViaCall of
+      { f: CallEvent.t
+      ; location: Location.t  (** location of the call event *)
+      ; history: ValueHistory.t  (** the call involves a value with this prior history *)
+      ; in_call: t  (** last step of the trace is in a call to [f] made at [location] *) }
 [@@deriving compare]
 
-val pp_action : (F.formatter -> 'a -> unit) -> F.formatter -> 'a action -> unit
+val pp : pp_immediate:(F.formatter -> unit) -> F.formatter -> t -> unit
 
-val immediate_of_action : 'a action -> 'a
+val get_outer_location : t -> Location.t
+(** skip histories and go straight to the where the action is: either the action itself or the call
+    that leads to the action *)
 
-val outer_location_of_action : 'a action -> Location.t
+val get_start_location : t -> Location.t
+(** initial step in the history if not empty, or else same as {!get_outer_location} *)
 
-val add_errlog_of_action :
-     nesting:int
-  -> (F.formatter -> 'a -> unit)
-  -> 'a action
-  -> Errlog.loc_trace_elem sexp_list
-  -> Errlog.loc_trace_elem sexp_list
+val add_to_errlog :
+     ?include_value_history:bool
+  -> nesting:int
+  -> pp_immediate:(F.formatter -> unit)
+  -> t
+  -> Errlog.loc_trace_elem list
+  -> Errlog.loc_trace_elem list

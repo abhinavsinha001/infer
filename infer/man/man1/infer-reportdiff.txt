@@ -28,7 +28,7 @@ OPTIONS
 
        --debug,-g
            Activates: Debug mode (also sets --debug-level 2,
-           --developer-mode, --no-filtering, --print-buckets, --print-types,
+           --developer-mode, --print-buckets, --print-types,
            --reports-include-ml-loc, --no-only-cheap-debug, --trace-error,
            --write-dotty, --write-html) (Conversely: --no-debug | -G)
 
@@ -41,15 +41,19 @@ OPTIONS
 
        --debug-level-analysis int
            Debug level for the analysis. See --debug-level for accepted
-           values. (default: 0)
+           values.
 
        --debug-level-capture int
            Debug level for the capture. See --debug-level for accepted
-           values. (default: 0)
+           values.
 
        --debug-level-linters int
            Debug level for the linters. See --debug-level for accepted
-           values. (default: 0)
+           values.
+
+       --no-deduplicate
+           Deactivates: Apply issue-specific deduplication during analysis
+           and/or reporting. (Conversely: --deduplicate)
 
        --file-renamings path
            JSON with a list of file renamings to use while computing
@@ -61,7 +65,7 @@ OPTIONS
        --help-format { auto | groff | pager | plain }
            Show this help in the specified format. auto sets the format to
            plain if the environment variable TERM is "dumb" or undefined, and
-           to pager otherwise. (default: auto)
+           to pager otherwise.
 
        --help-full
            Show this manual with all internal options in the INTERNAL OPTIONS

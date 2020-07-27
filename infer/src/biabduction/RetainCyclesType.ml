@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,11 +8,11 @@ open! IStd
 
 type retain_cycle_node = {rc_node_exp: Exp.t; rc_node_typ: Typ.t}
 
-type retain_cycle_field = {rc_field_name: Typ.Fieldname.t; rc_field_inst: Sil.inst}
+type retain_cycle_field = {rc_field_name: Fieldname.t; rc_field_inst: Predicates.inst}
 
 type retain_cycle_edge_obj = {rc_from: retain_cycle_node; rc_field: retain_cycle_field}
 
-type retain_cycle_edge = Object of retain_cycle_edge_obj | Block of Typ.Procname.t * Pvar.t
+type retain_cycle_edge = Object of retain_cycle_edge_obj | Block of Procname.t * Pvar.t
 
 type t = {rc_head: retain_cycle_edge; rc_elements: retain_cycle_edge list}
 
@@ -21,7 +21,7 @@ let compare_retain_cycle_node (node1 : retain_cycle_node) (node2 : retain_cycle_
 
 
 let compare_retain_cycle_field (node1 : retain_cycle_field) (node2 : retain_cycle_field) =
-  Typ.Fieldname.compare node1.rc_field_name node2.rc_field_name
+  Fieldname.compare node1.rc_field_name node2.rc_field_name
 
 
 let compare_retain_cycle_edge_obj (obj1 : retain_cycle_edge_obj) (obj2 : retain_cycle_edge_obj) =
@@ -36,7 +36,7 @@ let compare_retain_cycle_edge (edge1 : retain_cycle_edge) (edge2 : retain_cycle_
   | Object edge_obj1, Object edge_obj2 ->
       compare_retain_cycle_edge_obj edge_obj1 edge_obj2
   | Block (procname1, _), Block (procname2, _) ->
-      Typ.Procname.compare procname1 procname2
+      Procname.compare procname1 procname2
   | Object _, Block _ ->
       1
   | Block _, Object _ ->
@@ -50,15 +50,13 @@ let compare (rc1 : t) (rc2 : t) =
 
 
 module Set = Caml.Set.Make (struct
-  type nonrec t = t
-
-  let compare = compare
+  type nonrec t = t [@@deriving compare]
 end)
 
 let is_inst_rearrange node =
   match node with
   | Object obj -> (
-    match obj.rc_field.rc_field_inst with Sil.Irearrange _ -> true | _ -> false )
+    match obj.rc_field.rc_field_inst with Predicates.Irearrange _ -> true | _ -> false )
   | Block _ ->
       false
 
@@ -66,7 +64,7 @@ let is_inst_rearrange node =
 let is_isa_field node =
   match node with
   | Object obj ->
-      String.equal (Typ.Fieldname.to_string obj.rc_field.rc_field_name) "isa"
+      String.equal (Fieldname.to_string obj.rc_field.rc_field_name) "isa"
   | Block _ ->
       false
 
@@ -99,7 +97,7 @@ let pp_retain_cycle_node f (node : retain_cycle_node) =
 
 
 let pp_retain_cycle_field f (field : retain_cycle_field) =
-  Format.fprintf f "%a[%a]" Typ.Fieldname.pp field.rc_field_name Sil.pp_inst field.rc_field_inst
+  Format.fprintf f "%a[%a]" Fieldname.pp field.rc_field_name Predicates.pp_inst field.rc_field_inst
 
 
 let pp_retain_cycle_edge f (edge : retain_cycle_edge) =
@@ -142,16 +140,15 @@ let create_cycle cycle =
   (*isa is an internal field not accessible or writable, so it doesn't make sense in a cycle *)
   if List.exists ~f:is_isa_field cycle then None
     (* The modelled types, where the models are meant to catch NPEs or Memory Leaks, include fields
-     that don't necessarily reflect the real code, so potential retain cycles including them are
-     probably wrong. *)
+       that don't necessarily reflect the real code, so potential retain cycles including them are
+       probably wrong. *)
   else if List.exists ~f:is_modelled_type cycle then None
     (* There are some false positives where we report on null expressions, we can eliminate them here *)
   else if List.exists ~f:is_exp_null cycle then None
   else
     match cycle with
     | [hd] ->
-        if is_inst_rearrange hd then None
-          (* cycles of length 1 created at rearrange are not real *)
+        if is_inst_rearrange hd then None (* cycles of length 1 created at rearrange are not real *)
         else Some (normalize_cycle {rc_elements= cycle; rc_head= hd})
     | hd :: _ ->
         Some (normalize_cycle {rc_elements= cycle; rc_head= hd})
@@ -172,20 +169,20 @@ let pp_dotty fmt cycle =
     | Object obj ->
         Format.fprintf fmt "%s_%a"
           (Typ.to_string obj.rc_from.rc_node_typ)
-          Typ.Fieldname.pp obj.rc_field.rc_field_name
+          Fieldname.pp obj.rc_field.rc_field_name
     | Block (name, _) ->
-        Format.pp_print_string fmt (Typ.Procname.to_unique_id name)
+        Procname.pp_unique_id fmt name
   in
   let pp_dotty_field fmt element =
     match element with
     | Object obj ->
-        Typ.Fieldname.pp fmt obj.rc_field.rc_field_name
+        Fieldname.pp fmt obj.rc_field.rc_field_name
     | Block _ ->
         Format.fprintf fmt ""
   in
   let pp_dotty_element fmt element =
-    Format.fprintf fmt "\t\"%a\" [label = \"%a | %a \"]@\n" pp_dotty_id element pp_dotty_obj
-      element pp_dotty_field element
+    Format.fprintf fmt "\t\"%a\" [label = \"%a | %a \"]@\n" pp_dotty_id element pp_dotty_obj element
+      pp_dotty_field element
   in
   let rec pp_dotty_edges fmt edges =
     match edges with
@@ -211,4 +208,5 @@ let pp_dotty fmt cycle =
 let write_dotty_to_file fname cycle =
   let chan = Out_channel.create fname in
   let fmt = Format.formatter_of_out_channel chan in
-  pp_dotty fmt cycle ; Out_channel.close chan
+  pp_dotty fmt cycle ;
+  Out_channel.close chan

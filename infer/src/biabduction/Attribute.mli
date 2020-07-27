@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -10,7 +10,7 @@ open! IStd
 
 (** Attribute manipulation in Propositions (i.e., Symbolic Heaps) *)
 
-val is_pred : Sil.atom -> bool
+val is_pred : Predicates.atom -> bool
 (** Check whether an atom is used to mark an attribute *)
 
 val add :
@@ -23,43 +23,39 @@ val add :
   -> Prop.normal Prop.t
 (** Add an attribute associated to the argument expressions *)
 
-val add_or_replace : Tenv.t -> Prop.normal Prop.t -> Sil.atom -> Prop.normal Prop.t
+val add_or_replace : Tenv.t -> Prop.normal Prop.t -> Predicates.atom -> Prop.normal Prop.t
 (** Replace an attribute associated to the expression *)
 
 val add_or_replace_check_changed :
-     Tenv.t
-  -> (PredSymb.t -> PredSymb.t -> unit)
-  -> Prop.normal Prop.t
-  -> Sil.atom
-  -> Prop.normal Prop.t
-(** Replace an attribute associated to the expression, and call the given function with new and
-    old attributes if they changed. *)
+  Tenv.t -> Prop.normal Prop.t -> Predicates.atom -> Prop.normal Prop.t
+(** Replace an attribute associated to the expression, and call the given function with new and old
+    attributes if they changed. *)
 
-val get_all : 'a Prop.t -> Sil.atom list
+val get_all : 'a Prop.t -> Predicates.atom list
 (** Get all the attributes of the prop *)
 
-val get_for_exp : Tenv.t -> 'a Prop.t -> Exp.t -> Sil.atom list
+val get_for_exp : Tenv.t -> 'a Prop.t -> Exp.t -> Predicates.atom list
 (** Get the attributes associated to the expression, if any *)
 
-val get_objc_null : Tenv.t -> 'a Prop.t -> Exp.t -> Sil.atom option
+val get_objc_null : Tenv.t -> 'a Prop.t -> Exp.t -> Predicates.atom option
 (** Get the objc null attribute associated to the expression, if any *)
 
-val get_observer : Tenv.t -> 'a Prop.t -> Exp.t -> Sil.atom option
+val get_observer : Tenv.t -> 'a Prop.t -> Exp.t -> Predicates.atom option
 (** Get the observer attribute associated to the expression, if any *)
 
-val get_resource : Tenv.t -> 'a Prop.t -> Exp.t -> Sil.atom option
+val get_resource : Tenv.t -> 'a Prop.t -> Exp.t -> Predicates.atom option
 (** Get the resource attribute associated to the expression, if any *)
 
-val get_undef : Tenv.t -> 'a Prop.t -> Exp.t -> Sil.atom option
+val get_undef : Tenv.t -> 'a Prop.t -> Exp.t -> Predicates.atom option
 (** Get the undef attribute associated to the expression, if any *)
 
-val get_wontleak : Tenv.t -> 'a Prop.t -> Exp.t -> Sil.atom option
+val get_wontleak : Tenv.t -> 'a Prop.t -> Exp.t -> Predicates.atom option
 (** Get the wontleak attribute associated to the expression, if any *)
 
 val has_dangling_uninit : Tenv.t -> 'a Prop.t -> Exp.t -> bool
 (** Test for existence of an Adangling DAuninit attribute associated to the exp *)
 
-val remove : Tenv.t -> Prop.normal Prop.t -> Sil.atom -> Prop.normal Prop.t
+val remove : Tenv.t -> Prop.normal Prop.t -> Predicates.atom -> Prop.normal Prop.t
 (** Remove an attribute *)
 
 val remove_for_attr : Tenv.t -> Prop.normal Prop.t -> PredSymb.t -> Prop.normal Prop.t
@@ -77,19 +73,19 @@ val map_resource :
 (** Apply f to every resource attribute in the prop *)
 
 val replace_objc_null : Tenv.t -> Prop.normal Prop.t -> Exp.t -> Exp.t -> Prop.normal Prop.t
-(** [replace_objc_null lhs rhs].
-    If rhs has the objc_null attribute, replace the attribute and set the lhs = 0 *)
+(** [replace_objc_null lhs rhs]. If rhs has the objc_null attribute, replace the attribute and set
+    the lhs = 0 *)
 
 val nullify_exp_with_objc_null : Tenv.t -> Prop.normal Prop.t -> Exp.t -> Prop.normal Prop.t
-(** For each Var subexp of the argument with an Aobjc_null attribute,
-    remove the attribute and conjoin an equality to zero. *)
+(** For each Var subexp of the argument with an Aobjc_null attribute, remove the attribute and
+    conjoin an equality to zero. *)
 
 val mark_vars_as_undefined :
      Tenv.t
   -> Prop.normal Prop.t
   -> ret_exp:Exp.t
   -> undefined_actuals_by_ref:Exp.t list
-  -> Typ.Procname.t
+  -> Procname.t
   -> Annot.Item.t
   -> Location.t
   -> PredSymb.path_pos
@@ -113,7 +109,7 @@ val find_arithmetic_problem :
 
 val deallocate_stack_vars :
   Tenv.t -> Prop.normal Prop.t -> Pvar.t list -> Pvar.t list * Prop.normal Prop.t
-(** Deallocate the stack variables in [pvars], and replace them by normal variables.
-    Return the list of stack variables whose address was still present after deallocation. *)
+(** Deallocate the stack variables in [pvars], and replace them by normal variables. Return the list
+    of stack variables whose address was still present after deallocation. *)
 
 val find_equal_formal_path : Tenv.t -> Exp.t -> 'a Prop.t -> Exp.t option

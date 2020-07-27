@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -13,17 +13,15 @@ module Types = struct
 
   type 'astate top_lifted = Top | NonTop of 'astate
 
-  type ('below, 'above) below_above = Below of 'below | Above of 'above
+  type ('below, 'astate, 'above) below_above = Below of 'below | Above of 'above | Val of 'astate
 end
 
 open! Types
 
-exception Stop_analysis
-
 module type NoJoin = sig
   include PrettyPrintable.PrintableType
 
-  val ( <= ) : lhs:t -> rhs:t -> bool
+  val leq : lhs:t -> rhs:t -> bool
 end
 
 module type S = sig
@@ -37,7 +35,7 @@ end
 module Empty : S with type t = unit = struct
   type t = unit
 
-  let ( <= ) ~lhs:() ~rhs:() = true
+  let leq ~lhs:() ~rhs:() = true
 
   let join () () = ()
 
@@ -63,7 +61,7 @@ module type WithTop = sig
 end
 
 module BottomLiftedUtils = struct
-  let ( <= ) ~le ~lhs ~rhs =
+  let leq ~leq ~lhs ~rhs =
     if phys_equal lhs rhs then true
     else
       match (lhs, rhs) with
@@ -72,7 +70,7 @@ module BottomLiftedUtils = struct
       | _, Bottom ->
           false
       | NonBottom lhs, NonBottom rhs ->
-          le ~lhs ~rhs
+          leq ~lhs ~rhs
 
 
   let map ~f astate =
@@ -96,7 +94,7 @@ module BottomLifted (Domain : S) = struct
 
   let is_bottom = function Bottom -> true | NonBottom _ -> false
 
-  let ( <= ) = BottomLiftedUtils.( <= ) ~le:Domain.( <= )
+  let leq = BottomLiftedUtils.leq ~leq:Domain.leq
 
   let join astate1 astate2 =
     if phys_equal astate1 astate2 then astate1
@@ -128,7 +126,7 @@ module BottomLifted (Domain : S) = struct
 end
 
 module TopLiftedUtils = struct
-  let ( <= ) ~le ~lhs ~rhs =
+  let leq ~leq ~lhs ~rhs =
     if phys_equal lhs rhs then true
     else
       match (lhs, rhs) with
@@ -137,7 +135,7 @@ module TopLiftedUtils = struct
       | Top, _ ->
           false
       | NonTop lhs, NonTop rhs ->
-          le ~lhs ~rhs
+          leq ~lhs ~rhs
 
 
   let pp_top f = F.pp_print_string f SpecialChars.down_tack
@@ -152,7 +150,7 @@ module TopLifted (Domain : S) = struct
 
   let is_top = function Top -> true | _ -> false
 
-  let ( <= ) = TopLiftedUtils.( <= ) ~le:Domain.( <= )
+  let leq = TopLiftedUtils.leq ~leq:Domain.leq
 
   let join astate1 astate2 =
     if phys_equal astate1 astate2 then astate1
@@ -180,10 +178,9 @@ end
 module Pair (Domain1 : S) (Domain2 : S) = struct
   type t = Domain1.t * Domain2.t
 
-  let ( <= ) ~lhs ~rhs =
+  let leq ~lhs ~rhs =
     if phys_equal lhs rhs then true
-    else
-      Domain1.( <= ) ~lhs:(fst lhs) ~rhs:(fst rhs) && Domain2.( <= ) ~lhs:(snd lhs) ~rhs:(snd rhs)
+    else Domain1.leq ~lhs:(fst lhs) ~rhs:(fst rhs) && Domain2.leq ~lhs:(snd lhs) ~rhs:(snd rhs)
 
 
   let join astate1 astate2 =
@@ -218,7 +215,7 @@ module Flat (V : PrettyPrintable.PrintableEquatableType) = struct
 
   let is_top = function Top -> true | _ -> false
 
-  let ( <= ) ~lhs ~rhs =
+  let leq ~lhs ~rhs =
     phys_equal lhs rhs
     ||
     match (lhs, rhs) with
@@ -257,65 +254,90 @@ module Flat (V : PrettyPrintable.PrintableEquatableType) = struct
 end
 
 module StackedUtils = struct
-  let compare x1 x2 ~cmp_below ~cmp_above =
+  let compare x1 x2 ~cmp_below ~cmp ~cmp_above =
     if phys_equal x1 x2 then 0
     else
       match (x1, x2) with
       | Below b1, Below b2 ->
           cmp_below b1 b2
-      | Below _, Above _ ->
+      | Below _, _ ->
           -1
-      | Above _, Below _ ->
+      | _, Below _ ->
           1
       | Above a1, Above a2 ->
           cmp_above a1 a2
+      | Above _, _ ->
+          1
+      | _, Above _ ->
+          -1
+      | Val v1, Val v2 ->
+          cmp v1 v2
 
 
-  let ( <= ) ~le_below ~le_above ~lhs ~rhs =
+  let leq ~leq_below ~leq ~leq_above ~lhs ~rhs =
     phys_equal lhs rhs
     ||
     match (lhs, rhs) with
     | Below lhs, Below rhs ->
-        le_below ~lhs ~rhs
-    | Below _, Above _ ->
+        leq_below ~lhs ~rhs
+    | Below _, _ ->
         true
-    | Above _, Below _ ->
+    | _, Below _ ->
         false
     | Above lhs, Above rhs ->
-        le_above ~lhs ~rhs
+        leq_above ~lhs ~rhs
+    | Above _, _ ->
+        false
+    | _, Above _ ->
+        true
+    | Val lhs, Val rhs ->
+        leq ~lhs ~rhs
 
 
-  let combine ~dir x1 x2 ~f_below ~f_above =
+  let combine ~dir x1 x2 ~f_below ~f ~f_above =
     match (x1, x2) with
     | Below b1, Below b2 ->
         Below (f_below b1 b2)
-    | (Below _ as below), (Above _ as above) | (Above _ as above), (Below _ as below) -> (
-      match dir with `Increasing -> above | `Decreasing -> below )
+    | Val v1, Val v2 ->
+        Val (f v1 v2)
     | Above a1, Above a2 ->
         Above (f_above a1 a2)
+    | (Below _ as below), x | x, (Below _ as below) -> (
+      match dir with `Increasing -> x | `Decreasing -> below )
+    | x, (Above _ as above) | (Above _ as above), x -> (
+      match dir with `Increasing -> above | `Decreasing -> x )
 
 
-  let map x ~f_below ~f_above =
-    match x with Below b -> Below (f_below b) | Above a -> Above (f_above a)
+  let map x ~f_below ~f ~f_above =
+    match x with Below b -> Below (f_below b) | Above a -> Above (f_above a) | Val v -> Val (f v)
 
 
-  let pp ~pp_below ~pp_above f = function Below b -> pp_below f b | Above a -> pp_above f a
+  let pp ~pp_below ~pp ~pp_above f = function
+    | Below b ->
+        pp_below f b
+    | Above a ->
+        pp_above f a
+    | Val v ->
+        pp f v
 end
 
-module Stacked (Below : S) (Above : S) = struct
-  type t = (Below.t, Above.t) below_above
+module Stacked (Below : S) (Val : S) (Above : S) = struct
+  type t = (Below.t, Val.t, Above.t) below_above
 
-  let ( <= ) = StackedUtils.( <= ) ~le_below:Below.( <= ) ~le_above:Above.( <= )
+  let leq = StackedUtils.leq ~leq_below:Below.leq ~leq:Val.leq ~leq_above:Above.leq
 
-  let join = StackedUtils.combine ~dir:`Increasing ~f_below:Below.join ~f_above:Above.join
+  let join =
+    StackedUtils.combine ~dir:`Increasing ~f_below:Below.join ~f:Val.join ~f_above:Above.join
+
 
   let widen ~prev ~next ~num_iters =
     StackedUtils.combine ~dir:`Increasing prev next
       ~f_below:(fun prev next -> Below.widen ~prev ~next ~num_iters)
+      ~f:(fun prev next -> Val.widen ~prev ~next ~num_iters)
       ~f_above:(fun prev next -> Above.widen ~prev ~next ~num_iters)
 
 
-  let pp = StackedUtils.pp ~pp_below:Below.pp ~pp_above:Above.pp
+  let pp = StackedUtils.pp ~pp_below:Below.pp ~pp:Val.pp ~pp_above:Above.pp
 end
 
 module MinReprSet (Element : PrettyPrintable.PrintableOrderedType) = struct
@@ -327,7 +349,7 @@ module MinReprSet (Element : PrettyPrintable.PrintableOrderedType) = struct
 
   let is_bottom = Option.is_none
 
-  let ( <= ) ~lhs ~rhs =
+  let leq ~lhs ~rhs =
     match (lhs, rhs) with
     | None, _ ->
         true
@@ -382,7 +404,7 @@ module FiniteSetOfPPSet (S : PrettyPrintable.PPSet) = struct
 
   let is_bottom = is_empty
 
-  let ( <= ) ~lhs ~rhs = if phys_equal lhs rhs then true else subset lhs rhs
+  let leq ~lhs ~rhs = if phys_equal lhs rhs then true else subset lhs rhs
 
   let join astate1 astate2 = if phys_equal astate1 astate2 then astate1 else union astate1 astate2
 
@@ -405,7 +427,7 @@ module InvertedSet (Element : PrettyPrintable.PrintableOrderedType) = struct
 
   let is_top = is_empty
 
-  let ( <= ) ~lhs ~rhs = if phys_equal lhs rhs then true else subset rhs lhs
+  let leq ~lhs ~rhs = if phys_equal lhs rhs then true else subset rhs lhs
 
   let join astate1 astate2 = if phys_equal astate1 astate2 then astate1 else inter astate1 astate2
 
@@ -430,12 +452,12 @@ module MapOfPPMap (M : PrettyPrintable.PPMap) (ValueDomain : S) = struct
   let is_bottom = is_empty
 
   (** true if all keys in [lhs] are in [rhs], and each lhs value <= corresponding rhs value *)
-  let ( <= ) ~lhs ~rhs =
+  let leq ~lhs ~rhs =
     if phys_equal lhs rhs then true
     else
       M.for_all
         (fun k lhs_v ->
-          try ValueDomain.( <= ) ~lhs:lhs_v ~rhs:(M.find k rhs) with Caml.Not_found -> false )
+          try ValueDomain.leq ~lhs:lhs_v ~rhs:(M.find k rhs) with Caml.Not_found -> false )
         lhs
 
 
@@ -493,10 +515,10 @@ module InvertedMap (Key : PrettyPrintable.PrintableOrderedType) (ValueDomain : S
 
   let is_top = is_empty
 
-  let ( <= ) ~lhs ~rhs =
+  let leq ~lhs ~rhs =
     if phys_equal lhs rhs then true
     else
-      try for_all (fun k rhs_v -> ValueDomain.( <= ) ~lhs:(find k lhs) ~rhs:rhs_v) rhs
+      try for_all (fun k rhs_v -> ValueDomain.leq ~lhs:(find k lhs) ~rhs:rhs_v) rhs
       with Caml.Not_found -> false
 
 
@@ -533,6 +555,158 @@ module InvertedMap (Key : PrettyPrintable.PrintableOrderedType) (ValueDomain : S
     inter prev next ~f:(fun prev next -> ValueDomain.widen ~prev ~next ~num_iters)
 end
 
+module SafeInvertedMap (Key : PrettyPrintable.PrintableOrderedType) (ValueDomain : WithTop) = struct
+  module M = InvertedMap (Key) (ValueDomain)
+
+  type key = M.key
+
+  type value = M.value
+
+  type t = M.t
+
+  let empty = M.empty
+
+  let is_empty = M.is_empty
+
+  let mem = M.mem
+
+  let add k v m = if ValueDomain.is_top v then M.remove k m else M.add k v m
+
+  let none_if_top_opt = function Some v when ValueDomain.is_top v -> None | r -> r
+
+  let update k f m =
+    let f opt_v = f opt_v |> none_if_top_opt in
+    M.update k f m
+
+
+  let singleton k v = add k v empty
+
+  let remove = M.remove
+
+  let merge f x y =
+    let f k opt_v1 opt_v2 = f k opt_v1 opt_v2 |> none_if_top_opt in
+    M.merge f x y
+
+
+  let union f x y =
+    let f k v1 v2 = f k v1 v2 |> none_if_top_opt in
+    M.union f x y
+
+
+  let compare = M.compare
+
+  let equal = M.equal
+
+  let iter = M.iter
+
+  let fold = M.fold
+
+  let for_all = M.for_all
+
+  let exists = M.exists
+
+  let filter = M.filter
+
+  let partition = M.partition
+
+  let cardinal = M.cardinal
+
+  let bindings = M.bindings
+
+  let min_binding = M.min_binding
+
+  let min_binding_opt = M.min_binding_opt
+
+  let max_binding = M.max_binding
+
+  let max_binding_opt = M.max_binding_opt
+
+  let choose = M.choose
+
+  let choose_opt = M.choose_opt
+
+  let split = M.split
+
+  let find = M.find
+
+  let find_opt = M.find_opt
+
+  let find_first = M.find_first
+
+  let find_first_opt = M.find_first_opt
+
+  let find_last = M.find_last
+
+  let find_last_opt = M.find_last_opt
+
+  let fold_map = M.fold_map
+
+  let of_seq = M.of_seq
+
+  let mapi f m =
+    let tops = ref [] in
+    let f k v =
+      let v = f k v in
+      if ValueDomain.is_top v then tops := k :: !tops ;
+      v
+    in
+    let m = M.mapi f m in
+    List.fold_left !tops ~init:m ~f:(fun m k -> remove k m)
+
+
+  let map f m = mapi (fun _ v -> f v) m
+
+  let is_singleton_or_more = M.is_singleton_or_more
+
+  let pp_key = M.pp_key
+
+  let pp = M.pp
+
+  let leq = M.leq
+
+  let inter ~f astate1 astate2 =
+    if phys_equal astate1 astate2 then astate1
+    else
+      let equals1 = ref true in
+      let equals2 = ref true in
+      let res =
+        merge
+          (fun _ v1_opt v2_opt ->
+            match (v1_opt, v2_opt) with
+            | Some v1, Some v2 ->
+                let v = f v1 v2 in
+                if ValueDomain.is_top v then (
+                  equals1 := false ;
+                  equals2 := false ;
+                  None )
+                else (
+                  if not (phys_equal v v1) then equals1 := false ;
+                  if not (phys_equal v v2) then equals2 := false ;
+                  Some v )
+            | Some _, None ->
+                equals1 := false ;
+                None
+            | None, Some _ ->
+                equals2 := false ;
+                None
+            | None, None ->
+                None )
+          astate1 astate2
+      in
+      if !equals1 then astate1 else if !equals2 then astate2 else res
+
+
+  let join = inter ~f:ValueDomain.join
+
+  let widen ~prev ~next ~num_iters =
+    inter prev next ~f:(fun prev next -> ValueDomain.widen ~prev ~next ~num_iters)
+
+
+  let top = M.top
+
+  let is_top = M.is_top
+end
+
 module FiniteMultiMap
     (Key : PrettyPrintable.PrintableOrderedType)
     (Value : PrettyPrintable.PrintableOrderedType) =
@@ -546,7 +720,7 @@ struct
 
   let is_bottom = M.is_empty
 
-  let ( <= ) = M.( <= )
+  let leq = M.leq
 
   let join = M.join
 
@@ -574,7 +748,7 @@ end
 module BooleanAnd = struct
   type t = bool
 
-  let ( <= ) ~lhs ~rhs = lhs || not rhs
+  let leq ~lhs ~rhs = lhs || not rhs
 
   let join = ( && )
 
@@ -590,7 +764,7 @@ module BooleanOr = struct
 
   let is_bottom astate = not astate
 
-  let ( <= ) ~lhs ~rhs = (not lhs) || rhs
+  let leq ~lhs ~rhs = (not lhs) || rhs
 
   let join = ( || )
 
@@ -617,7 +791,7 @@ module CountDomain (MaxCount : MaxCount) = struct
 
   let is_bottom = Int.equal bottom
 
-  let ( <= ) ~lhs ~rhs = lhs <= rhs
+  let leq ~lhs ~rhs = lhs <= rhs
 
   let join astate1 astate2 = Int.min top (Int.max astate1 astate2)
 
@@ -632,46 +806,29 @@ module CountDomain (MaxCount : MaxCount) = struct
   let pp = Int.pp
 end
 
-module StackDomain (Element : PrettyPrintable.PrintableOrderedType) = struct
-  type t = Element.t list
+module DownwardIntDomain (MaxCount : MaxCount) = struct
+  type t = int
 
-  let push = List.cons
-
-  let pop = List.tl_exn
-
-  let is_top = List.is_empty
-
-  let top = []
-
-  let pp fmt x = Pp.semicolon_seq Element.pp fmt x
-
-  (* is (rev rhs) a prefix of (rev lhs)? *)
-  let ( <= ) ~lhs ~rhs =
-    let rec aux lhs rhs =
-      match (lhs, rhs) with
-      | _, [] ->
-          true
-      | [], _ ->
-          false
-      | x :: _, y :: _ when not (Int.equal 0 (Element.compare x y)) ->
-          false
-      | _ :: xs, _ :: ys ->
-          aux xs ys
-    in
-    phys_equal lhs rhs || aux (List.rev lhs) (List.rev rhs)
+  let bottom =
+    assert (MaxCount.max > 0) ;
+    MaxCount.max
 
 
-  (* compute (rev (longest common prefix)) *)
-  let join lhs rhs =
-    let rec aux acc a b =
-      match (a, b) with
-      | x :: xs, y :: ys when Int.equal 0 (Element.compare x y) ->
-          aux (x :: acc) xs ys
-      | _, _ ->
-          acc
-    in
-    if phys_equal lhs rhs then lhs else aux [] (List.rev lhs) (List.rev rhs)
+  let top = 0
 
+  let is_top = Int.equal top
+
+  let is_bottom = Int.equal bottom
+
+  let leq ~lhs ~rhs = lhs >= rhs
+
+  let join astate1 astate2 = Int.min astate1 astate2
 
   let widen ~prev ~next ~num_iters:_ = join prev next
+
+  let increment astate = if is_bottom astate then astate else astate + 1
+
+  let decrement astate = if is_top astate then astate else astate - 1
+
+  let pp = Int.pp
 end

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -440,7 +440,7 @@ class ExtendsClassOnUiThread extends AllMethodsOnUiThread {
   }
 }
 
-// All annotations that start with "On" are assumed to be on the main thread
+// NOT All annotations that start with "On" are on the main thread
 @Target(ElementType.METHOD)
 @Retention(RetentionPolicy.CLASS)
 @interface OnXYZ {}
@@ -450,7 +450,7 @@ class WeirdAnnotation {
   int f;
 
   @OnXYZ
-  void fooOk() {
+  void fooBad() {
     f = 0;
   }
 }

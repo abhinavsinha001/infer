@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -17,13 +17,17 @@ module type S = sig
   module Domain : AbstractDomain.S
 
   (** read-only extra state (results of previous analyses, globals, etc.) *)
-  type extras
+  type analysis_data
 
   (** type of the instructions the transfer functions operate on *)
   type instr
 
-  val exec_instr : Domain.t -> extras ProcData.t -> CFG.Node.t -> instr -> Domain.t
-  (** {A} instr {A'}. [node] is the node of the current instruction *)
+  val exec_instr : Domain.t -> analysis_data -> CFG.Node.t -> instr -> Domain.t
+  (** [exec_instr astate proc_data node instr] should usually return [astate'] such that
+      [{astate} instr {astate'}] is a valid Hoare triple. In other words, [exec_instr] defines how
+      executing an instruction from a given abstract state changes that state into a new one. This
+      is usually called the {i transfer function} in Abstract Interpretation terms. [node] is the
+      node containing the current instruction. *)
 
   val pp_session_name : CFG.Node.t -> Format.formatter -> unit
   (** print session name for HTML debug *)
@@ -41,9 +45,9 @@ module type DisjunctiveConfig = sig
   val join_policy :
     [ `UnderApproximateAfter of int
       (** When the set of disjuncts gets bigger than [n] then just stop adding new states to it,
-         drop any further states on the floor. This corresponds to an under-approximation/bounded
-         approach. *)
-    | `NeverJoin  (** keep accumaluting states *) ]
+          drop any further states on the floor. This corresponds to an under-approximation/bounded
+          approach. *)
+    | `NeverJoin  (** keep accumulating states *) ]
 
   val widen_policy : [`UnderApproximateAfterNumIterations of int]
 end
@@ -53,35 +57,9 @@ module type DisjReady = sig
 
   module Domain : AbstractDomain.NoJoin
 
-  type extras
+  type analysis_data
 
-  type instr
-
-  val exec_instr : Domain.t -> extras ProcData.t -> CFG.Node.t -> instr -> Domain.t list
+  val exec_instr : Domain.t -> analysis_data -> CFG.Node.t -> Sil.instr -> Domain.t list
 
   val pp_session_name : CFG.Node.t -> Format.formatter -> unit
-end
-
-module type HILDisjReady = sig
-  include DisjReady with type instr := HilInstr.t
-end
-
-(** In the disjunctive interpreter, the domain is a set of abstract states representing a
-   disjunction between these states. The transfer functions are executed on each state in the
-   disjunct independently. The join on the disjunctive state is governed by the policy described in
-   [DConfig]. *)
-module MakeHILDisjunctive (TransferFunctions : HILDisjReady) (DConfig : DisjunctiveConfig) : sig
-  module Disjuncts : sig
-    type t
-
-    val singleton : TransferFunctions.Domain.t -> t
-
-    val elements : t -> TransferFunctions.Domain.t list [@@warning "-32"]
-  end
-
-  include
-    HIL
-    with type extras = TransferFunctions.extras
-     and module CFG = TransferFunctions.CFG
-     and type Domain.t = Disjuncts.t
 end

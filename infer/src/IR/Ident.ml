@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -46,8 +46,9 @@ let equal_name = [%compare.equal: name]
 
 type kind =
   | KNone
-      (** special kind of "null ident" (basically, a more compact way of implementing an ident option).
-      useful for situations when an instruction requires an id, but no one should read the result. *)
+      (** special kind of "null ident" (basically, a more compact way of implementing an ident
+          option). useful for situations when an instruction requires an id, but no one should read
+          the result. *)
   | KFootprint
   | KNormal
   | KPrimed
@@ -73,21 +74,15 @@ let equal i1 i2 =
 
 (** {2 Set for identifiers} *)
 module Set = Caml.Set.Make (struct
-  type nonrec t = t
-
-  let compare = compare
+  type nonrec t = t [@@deriving compare]
 end)
 
 module Map = Caml.Map.Make (struct
-  type nonrec t = t
-
-  let compare = compare
+  type nonrec t = t [@@deriving compare]
 end)
 
 module Hash = Hashtbl.Make (struct
-  type nonrec t = t
-
-  let equal = equal
+  type nonrec t = t [@@deriving equal]
 
   let hash (id : t) = Hashtbl.hash id
 end)
@@ -139,7 +134,9 @@ module NameGenerator = struct
         let stamp = NameHash.find !name_map name in
         NameHash.replace !name_map name (stamp + 1) ;
         stamp + 1
-      with Caml.Not_found -> NameHash.add !name_map name 0 ; 0
+      with Caml.Not_found ->
+        NameHash.add !name_map name 0 ;
+        0
     in
     {kind; name; stamp}
 
@@ -217,9 +214,7 @@ let update_name_generator ids =
 
 
 (** Generate a normal identifier whose name encodes a path given as a string. *)
-let create_path pathstring =
-  create_normal (string_to_name ("%path%" ^ pathstring)) path_ident_stamp
-
+let create_path pathstring = create_normal (string_to_name ("%path%" ^ pathstring)) path_ident_stamp
 
 (** {2 Pretty Printing} *)
 
@@ -239,9 +234,7 @@ let to_string id = F.asprintf "%a" pp id
 let pp_name f name = F.pp_print_string f (name_to_string name)
 
 module HashQueue = Hash_queue.Make (struct
-  type nonrec t = t
-
-  let compare = compare
+  type nonrec t = t [@@deriving compare]
 
   let hash = Hashtbl.hash
 
@@ -251,9 +244,16 @@ end)
 let hashqueue_of_sequence ?init s =
   let q = match init with None -> HashQueue.create () | Some q0 -> q0 in
   Sequence.iter s ~f:(fun id ->
-      let (_ : [`Key_already_present | `Ok]) = HashQueue.enqueue q id () in
+      let (_ : [`Key_already_present | `Ok]) = HashQueue.enqueue_back q id () in
       () ) ;
   q
 
 
 let set_of_sequence ?(init = Set.empty) s = Sequence.fold s ~init ~f:(fun ids id -> Set.add id ids)
+
+let counts_of_sequence seq =
+  let h = Hash.create (Sequence.length seq) in
+  let get id = Option.value (Hash.find_opt h id) ~default:0 in
+  let bump id = Hash.replace h id (1 + get id) in
+  Sequence.iter ~f:bump seq ;
+  get

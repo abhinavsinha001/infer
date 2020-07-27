@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -14,11 +14,24 @@ void deref_vector_element_after_push_back_bad(std::vector<int>& vec) {
   std::cout << *y << "\n";
 }
 
+// slight variation of above, in particular use vector::at()
+void deref_vector_pointer_element_after_push_back_bad(std::vector<int>* vec) {
+  int* elt = &vec->at(1);
+  int* y = elt;
+  vec->push_back(42);
+  std::cout << *y << "\n";
+}
+
 void deref_local_vector_element_after_push_back_bad() {
   std::vector<int> vec = {0, 0};
   int* elt = &vec[1];
   vec.push_back(42);
   std::cout << *elt << "\n";
+}
+
+void deref_null_local_vector_element_bad() {
+  std::vector<int*> vec = {nullptr};
+  std::cout << *vec[0] << "\n";
 }
 
 void two_push_back_ok(std::vector<int>& vec) {
@@ -58,7 +71,7 @@ void reserve_then_push_back_loop_ok(std::vector<int>& vec,
   std::cout << *elt << "\n";
 }
 
-void init_fill_then_push_back_loop_ok(std::vector<int>& vec_other) {
+void FP_init_fill_then_push_back_loop_ok(std::vector<int>& vec_other) {
   std::vector<int> vec(vec_other.size());
   int* elt = &vec[1];
   for (const auto& i : vec_other) {

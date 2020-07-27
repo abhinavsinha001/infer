@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -28,11 +28,11 @@ let parse_command_and_arguments command_and_arguments =
   (command, [arguments])
 
 
-(** Parse the compilation database json file into the compilationDatabase
-    map. The json file consists of an array of json objects that contain the file
-    to be compiled, the directory to be compiled in, and the compilation command as a list
-    and as a string. We pack this information into the compilationDatabase map, and remove the
-    clang invocation part, because we will use a clang wrapper. *)
+(** Parse the compilation database json file into the compilationDatabase map. The json file
+    consists of an array of json objects that contain the file to be compiled, the directory to be
+    compiled in, and the compilation command as a list and as a string. We pack this information
+    into the compilationDatabase map, and remove the clang invocation part, because we will use a
+    clang wrapper. *)
 let decode_json_file (database : t) json_format =
   let json_path = match json_format with `Raw x | `Escaped x -> x in
   let unescape_path s =
@@ -69,8 +69,7 @@ let decode_json_file (database : t) json_format =
           (* prefer "arguments" when available *)
           if Option.is_none !command then command := Some (parse_command_and_arguments cmd)
       | "command", json ->
-          exit_format_error
-            "the value of the \"command\" field is not a string; found '%s' instead"
+          exit_format_error "the value of the \"command\" field is not a string; found '%s' instead"
             (Yojson.Basic.to_string json)
       | "arguments", `List args -> (
           let args =
@@ -90,8 +89,7 @@ let decode_json_file (database : t) json_format =
           | cmd :: args ->
               command := Some (cmd, List.map ~f:Escape.escape_shell args) )
       | "arguments", json ->
-          exit_format_error
-            "the value of the \"arguments\" field is not a list; found '%s' instead"
+          exit_format_error "the value of the \"arguments\" field is not a list; found '%s' instead"
             (Yojson.Basic.to_string json)
       | "output", _ ->
           ()

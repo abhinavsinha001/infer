@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,7 +9,7 @@ open! IStd
 module L = Logging
 
 type t =
-  { proc_name: Typ.Procname.t
+  { proc_name: Procname.t
   ; proc_location: Location.t
   ; err_key: Errlog.err_key
   ; err_data: Errlog.err_data }
@@ -23,7 +23,7 @@ let compare_err_data_ (err_data1 : Errlog.err_data) (err_data2 : Errlog.err_data
   Location.compare err_data1.loc err_data2.loc
 
 
-type proc_name_ = Typ.Procname.t
+type proc_name_ = Procname.t
 
 (* ignore proc name *)
 let compare_proc_name_ _ _ = 0
@@ -38,6 +38,7 @@ type t_ignore_duplicates = t =
      de-duplicating. *)
 let sort_filter_issues issues =
   let issues' =
+    (* FIXME(T54950303) replace use of filtering with deduplicate *)
     let compare = if Config.filtering then compare_t_ignore_duplicates else compare in
     List.dedup_and_sort ~compare issues
   in

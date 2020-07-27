@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -18,16 +18,16 @@ type action =
   | Propagate_to_return  (** Propagate taint from all actuals to the return value *)
 
 module type S = sig
-  module Trace : Trace.S
+  module Trace : TaintTrace.S
 
   module AccessTree : module type of AccessTree.Make (Trace) (AccessTree.DefaultConfig)
 
-  val handle_unknown_call : Typ.Procname.t -> Typ.t -> HilExp.t list -> Tenv.t -> action list
-  (** return a summary for handling an unknown call at the given site with the given return type
-      and actuals *)
+  val handle_unknown_call : Procname.t -> Typ.t -> HilExp.t list -> Tenv.t -> action list
+  (** return a summary for handling an unknown call at the given site with the given return type and
+      actuals *)
 
   val get_model :
-    Typ.Procname.t -> Typ.t -> HilExp.t list -> Tenv.t -> AccessTree.t -> action list option
+    Procname.t -> Typ.t -> HilExp.t list -> Tenv.t -> AccessTree.t -> action list option
   (** returns a model that should be used for the given (procname, return type, actuals, summary)
       instead of using the summary for the procname *)
 

@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -13,9 +13,11 @@ let tests =
   let open OUnit2 in
   let open AnalyzerTester.StructuredSil in
   let assert_empty = invariant "{ }" in
-  let fun_ptr_typ = Typ.mk (Tptr (Typ.mk (Tfun {no_return= false}), Pk_pointer)) in
+  let fun_ptr_typ = Typ.mk (Tptr (Typ.mk Tfun, Pk_pointer)) in
   let closure_exp captured_pvars =
-    let mk_captured_var str = (Exp.Var (ident_of_str str), pvar_of_str str, dummy_typ) in
+    let mk_captured_var str =
+      (Exp.Var (ident_of_str str), pvar_of_str str, dummy_typ, Pvar.ByReference)
+    in
     let captured_vars = List.map ~f:mk_captured_var captured_pvars in
     let closure = {Exp.name= dummy_procname; captured_vars} in
     Exp.Closure closure
@@ -97,6 +99,6 @@ let tests =
         ; While (unknown_cond, [id_assign_var "b" "d"])
         ; invariant "{ b }"
         ; id_assign_var "a" "b" ] ) ]
-    |> TestInterpreter.create_tests ProcData.empty_extras ~initial:Liveness.Domain.empty
+    |> TestInterpreter.create_tests (fun _summary -> ()) ~initial:Liveness.Domain.empty
   in
   "liveness_test_suite" >::: test_list

@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,22 +9,11 @@ open! IStd
 module F = Format
 module L = Logging
 
-(* Boilerplate to write/read our summaries alongside the summaries of other analyzers *)
-module Payload = SummaryPayload.Make (struct
-  type t = ResourceLeakDomain.summary
-
-  let update_payloads resources_payload (payloads : Payloads.t) =
-    {payloads with lab_resource_leaks= Some resources_payload}
-
-
-  let of_payloads {Payloads.lab_resource_leaks} = lab_resource_leaks
-end)
-
 module TransferFunctions (CFG : ProcCfg.S) = struct
   module CFG = CFG
   module Domain = ResourceLeakDomain
 
-  type extras = unit
+  type analysis_data = ResourceLeakDomain.Summary.t InterproceduralAnalysis.t
 
   let is_closeable_typename tenv typename =
     let is_closable_interface typename _ =
@@ -39,25 +28,25 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
 
   let is_closeable_procname tenv procname =
     match procname with
-    | Typ.Procname.Java java_procname ->
-        is_closeable_typename tenv
-          (Typ.Name.Java.from_string (Typ.Procname.Java.get_class_name java_procname))
+    | Procname.Java java_procname ->
+        is_closeable_typename tenv (Procname.Java.get_class_type_name java_procname)
     | _ ->
         false
 
 
   let acquires_resource tenv procname =
     (* We assume all constructors of a subclass of Closeable acquire a resource *)
-    Typ.Procname.is_constructor procname && is_closeable_procname tenv procname
+    Procname.is_constructor procname && is_closeable_procname tenv procname
 
 
   let releases_resource tenv procname =
     (* We assume the close method of a Closeable releases all of its resources *)
-    String.equal "close" (Typ.Procname.get_method procname) && is_closeable_procname tenv procname
+    String.equal "close" (Procname.get_method procname) && is_closeable_procname tenv procname
 
 
   (** Take an abstract state and instruction, produce a new abstract state *)
-  let exec_instr (astate : ResourceLeakDomain.t) {ProcData.pdesc; tenv} _ (instr : HilInstr.t) =
+  let exec_instr (astate : ResourceLeakDomain.t)
+      {InterproceduralAnalysis.proc_desc= _; tenv; analyze_dependency; _} _ (instr : HilInstr.t) =
     match instr with
     | Call (_return, Direct callee_procname, HilExp.AccessExpression allocated :: _, _, _loc)
       when acquires_resource tenv callee_procname ->
@@ -74,10 +63,10 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
       | _ ->
           astate )
     | Call (return, Direct callee_procname, actuals, _, _loc) -> (
-      match Payload.read pdesc callee_procname with
-      | Some summary ->
+      match analyze_dependency callee_procname with
+      | Some (_callee_proc_desc, callee_summary) ->
           (* interprocedural analysis produced a summary: use it *)
-          ResourceLeakDomain.Summary.apply ~summary ~return ~actuals astate
+          ResourceLeakDomain.Summary.apply ~callee:callee_summary ~return ~actuals astate
       | None ->
           (* No summary for [callee_procname]; it's native code or missing for some reason *)
           astate )
@@ -95,7 +84,7 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
     | Call (_, Indirect _, _, _, _) ->
         (* This should never happen in Java. Fail if it does. *)
         L.(die InternalError) "Unexpected indirect call %a" HilInstr.pp instr
-    | ExitScope _ ->
+    | Metadata _ ->
         astate
 
 
@@ -103,29 +92,25 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
 end
 
 (** 5(a) Type of CFG to analyze--Exceptional to follow exceptional control-flow edges, Normal to
-   ignore them *)
+    ignore them *)
 module CFG = ProcCfg.Normal
 
 (* Create an intraprocedural abstract interpreter from the transfer functions we defined *)
 module Analyzer = LowerHil.MakeAbstractInterpreter (TransferFunctions (CFG))
 
 (** Report an error when we have acquired more resources than we have released *)
-let report_if_leak post summary formal_map (proc_data : unit ProcData.t) =
+let report_if_leak {InterproceduralAnalysis.proc_desc; err_log; _} formal_map post =
   if ResourceLeakDomain.has_leak formal_map post then
-    let last_loc = Procdesc.Node.get_loc (Procdesc.get_exit_node proc_data.pdesc) in
+    let last_loc = Procdesc.Node.get_loc (Procdesc.get_exit_node proc_desc) in
     let message = F.asprintf "Leaked %a resource(s)" ResourceLeakDomain.pp post in
-    Reporting.log_error summary ~loc:last_loc IssueType.resource_leak message
+    Reporting.log_issue proc_desc err_log ~loc:last_loc ResourceLeakLabExercise
+      IssueType.lab_resource_leak message
 
 
-(* Callback for invoking the checker from the outside--registered in RegisterCheckers *)
-let checker {Callbacks.summary; proc_desc; tenv} : Summary.t =
-  let proc_data = ProcData.make proc_desc tenv () in
-  match Analyzer.compute_post proc_data ~initial:ResourceLeakDomain.initial with
-  | Some post ->
+(** Main function into the checker--registered in RegisterCheckers *)
+let checker ({InterproceduralAnalysis.proc_desc} as analysis_data) =
+  let result = Analyzer.compute_post analysis_data ~initial:ResourceLeakDomain.initial proc_desc in
+  Option.map result ~f:(fun post ->
       let formal_map = FormalMap.make proc_desc in
-      report_if_leak post summary formal_map proc_data ;
-      Payload.update_summary (ResourceLeakDomain.Summary.make formal_map post) summary
-  | None ->
-      L.(die InternalError)
-        "Analyzer failed to compute post for %a" Typ.Procname.pp
-        (Procdesc.get_proc_name proc_data.pdesc)
+      report_if_leak analysis_data formal_map post ;
+      ResourceLeakDomain.Summary.make formal_map post )

@@ -1,12 +1,12 @@
 /*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 #import <Foundation/NSObject.h>
 
-@interface A : NSObject
+@interface UninitBlocks : NSObject
 @end
 
 typedef void (^MyBlock)();
@@ -17,7 +17,7 @@ typedef void (^MyBlock)();
 
 @end
 
-@implementation A
+@implementation UninitBlocks
 
 + (int)ok1 {
   __block int a;

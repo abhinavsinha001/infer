@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -92,6 +92,11 @@ S* return_static_local_ok() {
   static S s{1};
   local = &s;
   return local;
+}
+
+static const S& return_static_local_ref_ok() {
+  static const S& s{1};
+  return s;
 }
 
 S* return_static_local_inner_scope_ok(bool b) {

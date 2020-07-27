@@ -1,57 +1,57 @@
 /*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 
 class Interproc {
-  synchronized void interproc1Bad(InterprocA a) {
-    interproc2Bad(a);
+  synchronized void lockThisThenParamBad(InterprocA a) {
+    lockParamA(a);
   }
 
-  void interproc2Bad(InterprocA b) {
+  void lockParamA(InterprocA b) {
     synchronized (b) {
     }
   }
 
-  synchronized void interproc1Ok(InterprocB a) {
-    interproc2Ok(a);
+  synchronized void lockThisThenParamOk(InterprocB a) {
+    lockParamB(a);
   }
 
-  void interproc2Ok(InterprocB b) {
+  void lockParamB(InterprocB b) {
     synchronized (b) {
     }
   }
 
-  void reentrant1Ok(InterprocB b) {
+  void lockThisTwiceOk(InterprocB b) {
     synchronized (this) {
       synchronized (b) {
-        reentrant2Ok();
+        lockThis();
       }
     }
   }
 
-  synchronized void reentrant2Ok() {}
+  synchronized void lockThis() {}
 }
 
 class InterprocA {
-  synchronized void interproc1Bad(Interproc c) {
-    interproc2Bad(c);
+  synchronized void lockThisThenParamBad(Interproc c) {
+    lockParam(c);
   }
 
-  void interproc2Bad(Interproc d) {
+  void lockParam(Interproc d) {
     synchronized (d) {
     }
   }
 }
 
 class InterprocB {
-  void interproc1Ok(Interproc c) {
+  void lockParamThenThisOk(Interproc c) {
     synchronized (c) {
-      interproc2Ok(c);
+      lockThis(c);
     }
   }
 
-  synchronized void interproc2Ok(Interproc d) {}
+  synchronized void lockThis(Interproc d) {}
 }

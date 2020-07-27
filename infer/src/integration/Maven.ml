@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -36,7 +36,11 @@ let infer_profile =
     </profile>|}
        infer_profile_name
        (Config.bin_dir ^/ InferCommand.infer_exe_name)
-       (if Version.is_jdk11 then " <release>11</release>" else ""))
+       ( match Config.java_version with
+       | Some version when version >= 9 ->
+           Printf.sprintf "<release>%d</release>" version
+       | _ ->
+           "" ))
 
 
 let pom_worklist = ref [CLOpt.init_work_dir]
@@ -69,7 +73,7 @@ let add_infer_profile_to_xml dir maven_xml infer_xml =
             insert_infer_profile xml_out
         | [_] when not !found_profiles_tag ->
             (* closing the root tag but no <profiles> tag found, add
-                <profiles>[infer profile]</profiles> *)
+               <profiles>[infer profile]</profiles> *)
             Xmlm.output xml_out (`El_start (("", "profiles"), [])) ;
             found_profiles_tag := true ;
             (* do not add <profiles> again *)

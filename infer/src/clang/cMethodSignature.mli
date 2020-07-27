@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,12 +8,17 @@
 open! IStd
 
 (** Define the signature of a method consisting of its name, its arguments, return type, location
-   and whether its an instance method. *)
+    and whether its an instance method. *)
 
-type param_type = {name: Mangled.t; typ: Typ.t; is_pointer_to_const: bool; annot: Annot.Item.t}
+type param_type =
+  { annot: Annot.Item.t
+  ; is_no_escape_block_arg: bool
+  ; is_pointer_to_const: bool
+  ; name: Mangled.t
+  ; typ: Typ.t }
 
 type t =
-  { name: Typ.Procname.t
+  { name: Procname.t
   ; access: Clang_ast_t.access_specifier
   ; class_param: param_type option
   ; params: param_type list
@@ -23,7 +28,8 @@ type t =
   ; loc: Clang_ast_t.source_range
   ; method_kind: ClangMethodKind.t
   ; is_cpp_virtual: bool
-  ; is_cpp_nothrow: bool
+  ; passed_as_noescape_block_to: Procname.t option
+  ; is_no_return: bool
   ; is_variadic: bool
   ; pointer_to_parent: Clang_ast_t.pointer option
   ; pointer_to_property_opt: Clang_ast_t.pointer option
@@ -35,7 +41,7 @@ val is_getter : t -> bool
 val is_setter : t -> bool
 
 val mk :
-     Typ.Procname.t
+     Procname.t
   -> param_type option
   -> param_type list
   -> Typ.t * Annot.Item.t
@@ -44,7 +50,8 @@ val mk :
   -> Clang_ast_t.source_range
   -> ClangMethodKind.t
   -> ?is_cpp_virtual:bool
-  -> ?is_cpp_nothrow:bool
+  -> ?passed_as_noescape_block_to:Procname.t option
+  -> ?is_no_return:bool
   -> ?is_variadic:bool
   -> Clang_ast_t.pointer option
   -> Clang_ast_t.pointer option
@@ -55,4 +62,9 @@ val mk :
 val pp : Format.formatter -> t -> unit
 
 val mk_param_type :
-  ?is_pointer_to_const:bool -> ?annot:Annot.Item.t -> Mangled.t -> Typ.t -> param_type
+     ?is_pointer_to_const:bool
+  -> ?annot:Annot.Item.t
+  -> ?is_no_escape_block_arg:bool
+  -> Mangled.t
+  -> Typ.t
+  -> param_type

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -78,6 +78,15 @@ public class Dispatch {
       i.foo();
     }
   }
+
+  private void privateCallUnnanotatedInterfaceOk(UnannotatedInterface i) {
+    i.foo();
+  }
+
+  public void callOwnedUnnanotatedInterfaceOk() {
+    UnannotatedInterface owned = new UnannotadedImplementation();
+    privateCallUnnanotatedInterfaceOk(owned);
+  }
 }
 
 class Some {
@@ -101,4 +110,8 @@ class ThreadConfinedField {
   void interfaceCallOnNormalFieldBad() {
     mNormal.foo();
   }
+}
+
+class UnannotadedImplementation implements UnannotatedInterface {
+  public void foo() {}
 }

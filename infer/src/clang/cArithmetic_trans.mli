@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -20,8 +20,8 @@ val binary_operation_instruction :
   -> Location.t
   -> Exp.t * Sil.instr list
 (** Returns a pair ([binary_expression], instructions). "binary_expression" is returned when we are
-   calculating an expression "instructions" is not empty when the binary operator is actually a
-   statement like an assignment. *)
+    calculating an expression "instructions" is not empty when the binary operator is actually a
+    statement like an assignment. *)
 
 val unary_operation_instruction :
      CFrontend_config.translation_unit_context

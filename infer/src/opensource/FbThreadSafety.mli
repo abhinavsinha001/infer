@@ -1,16 +1,14 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *)
 
-open! IStd
+val is_custom_init : 'tenv_t -> 'procname_t -> bool
 
-val is_custom_init : Tenv.t -> Typ.Procname.t -> bool
+val is_logging_method : 'procname_t -> bool
 
-val is_logging_method : Typ.Procname.t -> bool
-
-val get_fbthreadsafe_class_annot : Typ.Procname.t -> Tenv.t -> (string * string) option
+val get_fbthreadsafe_class_annot : 'procname_t -> 'tenv_t -> (string * string) option
 
 val message_fbthreadsafe_class : string -> string -> string

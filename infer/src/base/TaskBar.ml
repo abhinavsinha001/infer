@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,7 +8,7 @@
 open! IStd
 module F = Format
 
-(** {2 arbitrary constants } *)
+(** {2 arbitrary constants} *)
 
 (** max size for the top bar of the multiline task bar *)
 let top_bar_size_default = 100
@@ -45,6 +45,8 @@ let rec pp_n c fmt n =
 
 let move_bol = "\r"
 
+let move_cursor_down n = Printf.sprintf "\027[%iB" n
+
 let move_cursor_up n = Printf.sprintf "\027[%iA" n
 
 let erase_eol = "\027[0K"
@@ -68,8 +70,7 @@ let draw_top_bar fmt ~term_width ~total ~finished ~elapsed =
     ++ ( "%s"
        , max (String.length elapsed_string) 9
          (* leave some room for elapsed_string to avoid flicker. 9 characters is "XXhXXmXXs" so it
-            gives some reasonable margin. *)
-       )
+            gives some reasonable margin. *) )
   in
   let top_bar_size = min term_width top_bar_size_default in
   let progress_bar_size = top_bar_size - size_around_progress_bar in
@@ -143,7 +144,8 @@ let create ~jobs =
         ; tasks_done= 0
         ; tasks_total= 0 }
       in
-      ANSITerminal.erase Below ; MultiLine task_bar
+      ANSITerminal.erase Below ;
+      MultiLine task_bar
 
 
 let update_status_multiline task_bar ~slot:job t0 status =
@@ -168,10 +170,10 @@ let set_tasks_total task_bar n =
       ()
 
 
-let tasks_done_add task_bar n =
+let set_remaining_tasks task_bar n =
   match task_bar with
   | MultiLine multiline ->
-      multiline.tasks_done <- multiline.tasks_done + n
+      multiline.tasks_done <- multiline.tasks_total - n
   | NonInteractive | Quiet ->
       ()
 
@@ -185,13 +187,11 @@ let tasks_done_reset task_bar =
 
 
 let finish = function
-  | MultiLine _ ->
+  | MultiLine _ as task_bar ->
+      refresh task_bar ;
       (* leave the progress bar displayed *)
-      Out_channel.output_string stderr "\n" ;
+      F.eprintf "%s%!" (move_cursor_down 1) ;
       ANSITerminal.erase Below ;
       Out_channel.flush stderr
   | NonInteractive | Quiet ->
       ()
-
-
-let is_interactive = function MultiLine _ -> true | NonInteractive | Quiet -> false

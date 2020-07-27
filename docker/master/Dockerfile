@@ -1,4 +1,4 @@
-FROM debian:stretch-slim
+FROM debian:buster-slim AS compilator
 
 LABEL maintainer "Infer team"
 
@@ -20,25 +20,24 @@ RUN apt-get update && \
       libmpfr-dev \
       libsqlite3-dev \
       make \
-      openjdk-8-jdk-headless \
+      openjdk-11-jdk-headless \
       patch \
+      patchelf \
       pkg-config \
-      python2.7 \
+      python3.7 \
+      python3-distutils \
       unzip \
       xz-utils \
       zlib1g-dev && \
     rm -rf /var/lib/apt/lists/*
 
-# Some scripts in facebook-clang-plugins assume "python" is available
-RUN cd /usr/local/bin && ln -s /usr/bin/python2.7 python
-
 # Install opam 2
-RUN curl -sL https://github.com/ocaml/opam/releases/download/2.0.3/opam-2.0.3-x86_64-linux > /usr/bin/opam && \
+RUN curl -sL https://github.com/ocaml/opam/releases/download/2.0.6/opam-2.0.6-x86_64-linux > /usr/bin/opam && \
     chmod +x /usr/bin/opam
 
 # Disable sandboxing
 # Without this opam fails to compile OCaml for some reason. We don't need sandboxing inside a Docker container anyway.
-RUN opam init --reinit --bare --disable-sandboxing
+RUN opam init --reinit --bare --disable-sandboxing --yes --auto-setup
 
 # Download the latest Infer master
 RUN cd / && \
@@ -54,20 +53,25 @@ RUN cd /infer && \
     ./configure && \
     ./facebook-clang-plugins/clang/setup.sh
 
-# Hackish for now: pull to get the latest version
-RUN cd /infer && git pull 
+# Generate a release
+RUN cd /infer && \
+    make install-with-libs \
+    BUILD_MODE=opt \
+    PATCHELF=patchelf \
+    DESTDIR="/infer-release" \
+    libdir_relative_to_bindir="../lib"
+
+FROM debian:buster-slim AS executor
+
+RUN apt-get update && apt-get install --yes --no-install-recommends sqlite3
+
+# Get the infer release
+COPY --from=compilator /infer-release/usr/local /infer
+
+# Installl infer
+ENV PATH /infer/bin:${PATH}
 
 # if called with /infer-host mounted then copy infer there
 RUN if test -d /infer-host; then \
       cp -av /infer/. /infer-host; \
     fi
-
-# Install Infer
-ENV INFER_HOME /infer/infer
-ENV PATH ${INFER_HOME}/bin:${PATH}
-
-# build in non-optimized mode by default to speed up build times
-ENV BUILD_MODE=default
-
-# prevent exiting by compulsively hitting Control-D
-ENV IGNOREEOF=9

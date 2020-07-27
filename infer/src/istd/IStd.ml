@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -33,13 +33,9 @@ module ANSITerminal : module type of ANSITerminal = struct
 
   (* more careful about when the channel is connected to a tty *)
 
-  let print_string =
-    if Unix.(isatty stdout) then print_string else fun _ -> Pervasives.print_string
+  let print_string = if Unix.(isatty stdout) then print_string else fun _ -> Stdlib.print_string
 
-
-  let prerr_string =
-    if Unix.(isatty stderr) then prerr_string else fun _ -> Pervasives.prerr_string
-
+  let prerr_string = if Unix.(isatty stderr) then prerr_string else fun _ -> Stdlib.prerr_string
 
   let printf styles fmt = Format.ksprintf (fun s -> print_string styles s) fmt
 

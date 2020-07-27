@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -56,7 +56,8 @@ h1 { font-size:14pt }
 <body>
 |}
     in
-    F.pp_print_string fmt s ; (fd, fmt)
+    F.pp_print_string fmt s ;
+    (fd, fmt)
 
 
   (** Get the full html filename from a path *)
@@ -85,7 +86,7 @@ h1 { font-size:14pt }
   (** Return true if the html file was modified since the beginning of the analysis *)
   let modified_during_analysis source path =
     let fname = get_full_fname source path in
-    if DB.file_exists fname then DB.file_modified_time fname >= Config.initial_analysis_time
+    if DB.file_exists fname then Float.(DB.file_modified_time fname >= Config.initial_analysis_time)
     else false
 
 
@@ -98,10 +99,6 @@ h1 { font-size:14pt }
   (** Print a horizontal line *)
   let pp_hline fmt () = F.pp_print_string fmt "\n<hr width=\"100%\">\n"
 
-  let with_color color pp f x =
-    F.fprintf f "<span class='%s'>%a</span>" (Pp.color_string color) pp x
-
-
   let pp_link ?(name = None) ?(pos = None) ~path fmt text =
     let link_str =
       let escaped_path = List.map ~f:Escape.escape_url path in
@@ -113,7 +110,7 @@ h1 { font-size:14pt }
 
 
   (** File name for the node, given the procedure name and node id *)
-  let node_filename pname id = F.sprintf "%s_node%d" (Typ.Procname.to_filename pname) id
+  let node_filename pname id = F.sprintf "%s_node%d" (Procname.to_filename pname) id
 
   (** Print an html link to the given node. *)
   let pp_node_link path_to_root pname ~description ~preds ~succs ~exn ~isvisited fmt id =
@@ -133,7 +130,7 @@ h1 { font-size:14pt }
 
   (** Print an html link to the given proc *)
   let pp_proc_link path_to_root proc_name fmt text =
-    pp_link ~path:(path_to_root @ [Typ.Procname.to_filename proc_name]) fmt text
+    pp_link ~path:(path_to_root @ [Procname.to_filename proc_name]) fmt text
 
 
   (** Print an html link to the given line number of the current source file *)
@@ -171,45 +168,3 @@ h1 { font-size:14pt }
 end
 
 (* =============== END of module Html =============== *)
-(* =============== START of module Xml =============== *)
-
-(** Create and print xml trees *)
-module Xml = struct
-  let tag_err = "err"
-
-  let tag_file = "file"
-
-  let tag_in_calls = "in_calls"
-
-  let tag_line = "line"
-
-  let tag_loc = "loc"
-
-  let tag_name = "name"
-
-  let tag_name_id = "name_id"
-
-  let tag_out_calls = "out_calls"
-
-  let tag_proof_coverage = "proof_coverage"
-
-  let tag_proof_trace = "proof_trace"
-
-  let tag_rank = "rank"
-
-  let tag_signature = "signature"
-
-  let tag_specs = "specs"
-
-  let tag_symop = "symop"
-
-  let tag_time = "time"
-
-  let tag_to = "to"
-
-  let tag_top = "top"
-
-  let tag_weight = "weight"
-end
-
-(* =============== END of module Xml =============== *)

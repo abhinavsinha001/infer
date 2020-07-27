@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,7 +8,7 @@
 open! IStd
 module F = Format
 
-(** Pretty Printing} *)
+(** Pretty Printing *)
 
 (** Kind of simple printing: default or with full types *)
 type simple_kind = SIM_DEFAULT | SIM_WITH_TYP
@@ -73,8 +73,8 @@ let extend_colormap pe (x : Obj.t) (c : color) =
   {pe with cmap_norm= colormap}
 
 
-(** Set the object substitution, which is supposed to preserve the type.
-    Currently only used for a map from (identifier) expressions to the program var containing them *)
+(** Set the object substitution, which is supposed to preserve the type. Currently only used for a
+    map from (identifier) expressions to the program var containing them *)
 let set_obj_sub pe (sub : 'a -> 'a) =
   let new_obj_sub x =
     let x' = Obj.repr (sub (Obj.obj x)) in
@@ -100,6 +100,25 @@ let color_string = function
       "color_red"
 
 
+let html_with_color color pp f x =
+  F.fprintf f "<span class='%s'>%a</span>" (color_string color) pp x
+
+
+let color_wrapper pe ppf x ~f =
+  match pe.kind with
+  | HTML when not (equal_color (pe.cmap_norm (Obj.repr x)) pe.color) ->
+      let color = pe.cmap_norm (Obj.repr x) in
+      let pe' =
+        if equal_color color Red then
+          (* All subexpressions red *)
+          {pe with cmap_norm= colormap_red; color= Red}
+        else {pe with color}
+      in
+      html_with_color color (f pe') ppf x
+  | _ ->
+      f pe ppf x
+
+
 let seq ?(print_env = text) ?sep:(sep_text = " ") ?(sep_html = sep_text) pp =
   let rec aux f = function
     | [] ->
@@ -118,15 +137,19 @@ let comma_seq ?print_env pp f l = seq ?print_env ~sep:"," pp f l
 
 let semicolon_seq ?print_env pp f l = seq ?print_env ~sep:"; " pp f l
 
-(** Print the current time and date in a format similar to the "date" command *)
-let current_time f () =
-  let tm = Unix.localtime (Unix.time ()) in
-  F.fprintf f "%02d/%02d/%4d %02d:%02d" tm.Unix.tm_mday tm.Unix.tm_mon (tm.Unix.tm_year + 1900)
-    tm.Unix.tm_hour tm.Unix.tm_min
+let comma_seq_diff pp pe0 f =
+  let rec doit = function
+    | [] ->
+        ()
+    | [x] ->
+        color_wrapper pe0 f x ~f:(fun _pe -> pp)
+    | x :: l ->
+        color_wrapper pe0 f x ~f:(fun _pe -> pp) ;
+        F.pp_print_string f ", " ;
+        doit l
+  in
+  doit
 
-
-(** Print the time in seconds elapsed since the beginning of the execution of the current command. *)
-let elapsed_time fmt () = Mtime.Span.pp fmt (Mtime_clock.elapsed ())
 
 let option pp fmt = function
   | None ->
@@ -135,9 +158,11 @@ let option pp fmt = function
       F.fprintf fmt "[Some %a]" pp x
 
 
-let to_string ~f fmt x = F.pp_print_string fmt (f x)
+let of_string ~f fmt x = F.pp_print_string fmt (f x)
 
-let cli_args fmt args =
+let string_of_pp pp = Format.asprintf "%a" pp
+
+let cli_args_with_verbosity ~verbose fmt args =
   let pp_args fmt args =
     F.fprintf fmt "@[<hov2>  " ;
     seq ~sep:"" ~print_env:text_break F.pp_print_string fmt args ;
@@ -169,8 +194,10 @@ let cli_args fmt args =
             Exn.pp exn
   in
   pp_args fmt args ;
-  pp_argfile_args String.Set.empty fmt args
+  if verbose then pp_argfile_args String.Set.empty fmt args
 
+
+let cli_args fmt args = cli_args_with_verbosity ~verbose:true fmt args
 
 let pair ~fst ~snd fmt (a, b) = F.fprintf fmt "(%a,@,%a)" fst a snd b
 

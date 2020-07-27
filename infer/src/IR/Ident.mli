@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -37,7 +37,7 @@ module Hash : Caml.Hashtbl.S with type key = t
 (** Map with ident as key. *)
 module Map : Caml.Map.S with type key = t
 
-module HashQueue : Hash_queue.S with type Key.t = t
+module HashQueue : Hash_queue.S with type key = t
 
 module NameGenerator : sig
   type t
@@ -98,7 +98,8 @@ val create_fresh : kind -> t
 (** Create a fresh identifier with default name for the given kind. *)
 
 val create_fresh_specialized_with_blocks : kind -> t
-(** Create a fresh identifier with default name for the given kind, with a non-clashing id for objc block specialization *)
+(** Create a fresh identifier with default name for the given kind, with a non-clashing id for objc
+    block specialization *)
 
 val create_path : string -> t
 (** Generate a normal identifier whose name encodes a path given as a string. *)
@@ -138,3 +139,5 @@ val to_string : t -> string
 val hashqueue_of_sequence : ?init:unit HashQueue.t -> t Sequence.t -> unit HashQueue.t
 
 val set_of_sequence : ?init:Set.t -> t Sequence.t -> Set.t
+
+val counts_of_sequence : t Sequence.t -> t -> int

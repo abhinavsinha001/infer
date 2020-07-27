@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -20,8 +20,9 @@ module StructuredSil = struct
     | Cmd of Sil.instr
     | If of Exp.t * structured_instr list * structured_instr list
     | While of Exp.t * structured_instr list
-        (** try/catch/finally. note: there is no throw. the semantics are that every command in the try
-       block is assumed to be possibly-excepting, and the catch block captures all exceptions *)
+        (** try/catch/finally. note: there is no throw. the semantics are that every command in the
+            try block is assumed to be possibly-excepting, and the catch block captures all
+            exceptions *)
     | Try of structured_instr list * structured_instr list * structured_instr list
     | Invariant of assertion * label
         (** gets autotranslated into assertions about abstract state *)
@@ -52,11 +53,14 @@ module StructuredSil = struct
 
   let dummy_loc = Location.dummy
 
-  let dummy_procname = Typ.Procname.empty_block
+  let dummy_procname = Procname.empty_block
 
   let label_counter = ref 0
 
-  let fresh_label () = incr label_counter ; !label_counter
+  let fresh_label () =
+    incr label_counter ;
+    !label_counter
+
 
   let invariant inv_str = Invariant (inv_str, fresh_label ())
 
@@ -68,9 +72,13 @@ module StructuredSil = struct
 
   let unknown_exp = var_of_str "__unknown__"
 
-  let make_load ~rhs_typ lhs_id rhs_exp = Cmd (Sil.Load (lhs_id, rhs_exp, rhs_typ, dummy_loc))
+  let make_load ~rhs_typ lhs_id rhs_exp =
+    Cmd (Sil.Load {id= lhs_id; e= rhs_exp; root_typ= rhs_typ; typ= rhs_typ; loc= dummy_loc})
 
-  let make_set ~rhs_typ ~lhs_exp ~rhs_exp = Cmd (Sil.Store (lhs_exp, rhs_typ, rhs_exp, dummy_loc))
+
+  let make_set ~rhs_typ ~lhs_exp ~rhs_exp =
+    Cmd (Sil.Store {e1= lhs_exp; root_typ= rhs_typ; typ= rhs_typ; e2= rhs_exp; loc= dummy_loc})
+
 
   let make_call ?(procname = dummy_procname) ?return:return_opt args =
     let ret_id_typ =
@@ -78,7 +86,7 @@ module StructuredSil = struct
       | Some ret_id_typ ->
           ret_id_typ
       | None ->
-          (Ident.create_fresh Ident.knormal, Typ.mk Tvoid)
+          (Ident.create_fresh Ident.knormal, Typ.void)
     in
     let call_exp = Exp.Const (Const.Cfun procname) in
     Cmd (Sil.Call (ret_id_typ, call_exp, args, dummy_loc, CallFlags.default))
@@ -162,7 +170,7 @@ struct
     in
     let create_node kind cmds = Procdesc.create_node pdesc dummy_loc kind cmds in
     let set_succs cur_node succs ~exn_handlers =
-      Procdesc.node_set_succs_exn pdesc cur_node succs exn_handlers
+      Procdesc.node_set_succs pdesc cur_node ~normal:succs ~exn:exn_handlers
     in
     let mk_prune_nodes_for_cond cond_exp if_kind =
       let mk_prune_node cond_exp if_kind true_branch =
@@ -243,13 +251,15 @@ struct
     let exit_node = create_node Procdesc.Node.Exit_node [] in
     set_succs last_node [exit_node] ~exn_handlers:no_exn_handlers ;
     Procdesc.set_exit_node pdesc exit_node ;
-    (pdesc, assert_map)
+    (Summary.OnDisk.reset pdesc, assert_map)
 
 
-  let create_test test_program extras ~initial pp_opt test_pname _ =
+  let create_test test_program make_analysis_data ~initial pp_opt test_pname _ =
     let pp_state = Option.value ~default:I.TransferFunctions.Domain.pp pp_opt in
-    let pdesc, assert_map = structured_program_to_cfg test_program test_pname in
-    let inv_map = I.exec_pdesc (ProcData.make pdesc (Tenv.create ()) extras) ~initial in
+    let summary, assert_map = structured_program_to_cfg test_program test_pname in
+    let inv_map =
+      I.exec_pdesc (make_analysis_data summary) ~initial (Summary.get_proc_desc summary)
+    in
     let collect_invariant_mismatches node_id (inv_str, inv_label) error_msgs_acc =
       let post_str =
         try
@@ -257,7 +267,7 @@ struct
           F.asprintf "%a" pp_state post
         with Caml.Not_found -> "_|_"
       in
-      if inv_str <> post_str then
+      if not (String.equal inv_str post_str) then
         let error_msg =
           F.fprintf F.str_formatter "> Expected state %s at invariant %d, but found state %s"
             inv_str inv_label post_str
@@ -288,12 +298,16 @@ module Make (T : TransferFunctions.SIL with type CFG.Node.t = Procdesc.Node.t) =
 
   let ai_list = [("ai_rpo", AI_RPO.create_test); ("ai_wto", AI_WTO.create_test)]
 
-  let create_tests ?(test_pname = Typ.Procname.empty_block) ~initial ?pp_opt extras tests =
+  let create_tests ?(test_pname = Procname.empty_block) ~initial ?pp_opt make_analysis_data tests =
+    AnalysisCallbacks.set_callbacks
+      { get_proc_desc_f= Ondemand.get_proc_desc
+      ; html_debug_new_node_session_f= NodePrinter.with_session
+      ; proc_resolve_attributes_f= Summary.OnDisk.proc_resolve_attributes } ;
     let open OUnit2 in
     List.concat_map
       ~f:(fun (name, test_program) ->
         List.map ai_list ~f:(fun (ai_name, create_test) ->
-            name ^ "_" ^ ai_name >:: create_test test_program extras ~initial pp_opt test_pname )
-        )
+            name ^ "_" ^ ai_name
+            >:: create_test test_program make_analysis_data ~initial pp_opt test_pname ) )
       tests
 end

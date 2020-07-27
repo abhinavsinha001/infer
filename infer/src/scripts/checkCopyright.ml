@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2015-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -16,8 +16,8 @@ let exit_code_of_event = function CopyrightModified -> 1 | CopyrightMalformed ->
 
 type comment_style =
   | Line of string * bool
-      (** line comments, eg "#" for shell, and whether there should be a
-                              newline before the copyright notice *)
+      (** line comments, eg "#" for shell, and whether there should be a newline before the
+          copyright notice *)
   | Block of string * string * string * bool  (** block comments, eg ("(*", "*", "*)") for ocaml *)
 [@@deriving compare]
 
@@ -41,9 +41,12 @@ let comment_style_python = Line ("#", false)
 
 let comment_style_shell = Line ("#", true)
 
+let comment_style_lisp = Line (";", false)
+
 let comment_styles_lang =
   [ (comment_style_al, "AL")
   ; (comment_style_c, "C")
+  ; (comment_style_lisp, "Lisp")
   ; (comment_style_llvm, "LLVM")
   ; (comment_style_m4, "M4")
   ; (comment_style_make, "Makefile")
@@ -169,25 +172,7 @@ let contains_monoidics cstart cend lines = contains_string ~substring:"Monoidics
 
 let contains_ropas cstart cend lines = contains_string ~substring:"ROPAS" cstart cend lines
 
-let get_copyright_year cstart cend lines =
-  let found = ref None in
-  let do_line line =
-    try
-      let fmt_re = Str.regexp "[0-9]+" in
-      ignore (Str.search_forward fmt_re line 0) ;
-      let fmt_match = Str.matched_string line in
-      if String.length fmt_match = 4 then
-        try found := Some (int_of_string fmt_match) with _ -> ()
-    with Caml.Not_found -> ()
-  in
-  for i = cstart to cend do
-    let line = lines.(i) in
-    if String.is_substring ~substring:"Copyright" line then do_line line
-  done ;
-  !found
-
-
-let pp_copyright ~monoidics ~ropas ~copyright_year com_style fmt =
+let pp_copyright ~monoidics ~ropas com_style fmt =
   let running_comment = match com_style with Line (s, _) | Block (_, s, _, _) -> s in
   let indent = indent_of_comment_style com_style in
   let pp_line str =
@@ -206,19 +191,16 @@ let pp_copyright ~monoidics ~ropas ~copyright_year com_style fmt =
   pp_start () ;
   if ropas then (
     pp_line " Copyright (c) 2016-present, Programming Research Laboratory (ROPAS)" ;
-    pp_line "                             Seoul National University, Korea" ;
-    pp_line " Copyright (c) 2017-present, Facebook, Inc." )
-  else (
-    if monoidics then pp_line " Copyright (c) 2009-2013, Monoidics ltd." ;
-    pp_line " Copyright (c) %d-present, Facebook, Inc." copyright_year ) ;
+    pp_line "                             Seoul National University, Korea" )
+  else if monoidics then pp_line " Copyright (c) 2009-2013, Monoidics ltd." ;
+  pp_line " Copyright (c) Facebook, Inc. and its affiliates." ;
   pp_line "" ;
   pp_line " This source code is licensed under the MIT license found in the" ;
   pp_line " LICENSE file in the root directory of this source tree." ;
   pp_end ()
 
 
-let copyright_has_changed fname lines ~notice_range:(cstart, cend) ~monoidics ~ropas
-    ~copyright_year com_style =
+let copyright_has_changed fname lines ~notice_range:(cstart, cend) ~monoidics ~ropas com_style =
   let old_copyright =
     let r = ref "" in
     for i = cstart to cend do
@@ -226,9 +208,7 @@ let copyright_has_changed fname lines ~notice_range:(cstart, cend) ~monoidics ~r
     done ;
     !r
   in
-  let new_copyright =
-    Format.asprintf "%t" (pp_copyright ~monoidics ~ropas ~copyright_year com_style)
-  in
+  let new_copyright = Format.asprintf "%t" (pp_copyright ~monoidics ~ropas com_style) in
   let changed = not (String.equal old_copyright new_copyright) in
   if !show_diff && changed then (
     let with_suffix fname suff = Filename.basename fname ^ suff in
@@ -240,43 +220,63 @@ let copyright_has_changed fname lines ~notice_range:(cstart, cend) ~monoidics ~r
   changed
 
 
-let com_style_of_lang =
-  [ (".ac", comment_style_m4)
-  ; (".al", comment_style_al)
-  ; (".atd", comment_style_ocaml)
-  ; (".c", comment_style_c)
-  ; (".cpp", comment_style_c)
-  ; (".h", comment_style_c)
-  ; (".inc", comment_style_c)
-  ; (".java", comment_style_c)
-  ; (".ll", comment_style_llvm)
-  ; (".m", comment_style_c)
-  ; (".m4", comment_style_m4)
-  ; (".make", comment_style_make)
-  ; (".mk", comment_style_make)
-  ; (".ml", comment_style_ocaml)
-  ; (".mli", comment_style_ocaml)
-  ; (".mll", comment_style_ocaml)
-  ; (".mly", comment_style_c)
-  ; (".mm", comment_style_c)
-  ; (".php", comment_style_php)
-  ; (".py", comment_style_python)
-  ; (".re", comment_style_c)
-  ; (".rei", comment_style_c)
-  ; (".sh", comment_style_shell)
-  ; ("dune.in", comment_style_ocaml)
-  ; ("dune.common.in", comment_style_ocaml)
-  ; ("dune-common.in", comment_style_ocaml)
-  ; ("dune-workspace.in", comment_style_llvm)
-  ; ("Makefile", comment_style_make) ]
+type inferred_comment_style =
+  | Resolved of comment_style
+  | Dune  (** dune files can have either an OCaml or a lisp-style syntax *)
 
+let com_style_of_lang =
+  [ (".ac", Resolved comment_style_m4)
+  ; (".al", Resolved comment_style_al)
+  ; (".atd", Resolved comment_style_ocaml)
+  ; (".c", Resolved comment_style_c)
+  ; (".cpp", Resolved comment_style_c)
+  ; (".h", Resolved comment_style_c)
+  ; (".inc", Resolved comment_style_c)
+  ; (".java", Resolved comment_style_c)
+  ; (".ll", Resolved comment_style_llvm)
+  ; (".m", Resolved comment_style_c)
+  ; (".m4", Resolved comment_style_m4)
+  ; (".make", Resolved comment_style_make)
+  ; (".mk", Resolved comment_style_make)
+  ; (".ml", Resolved comment_style_ocaml)
+  ; (".mli", Resolved comment_style_ocaml)
+  ; (".mll", Resolved comment_style_ocaml)
+  ; (".mly", Resolved comment_style_c)
+  ; (".mm", Resolved comment_style_c)
+  ; (".php", Resolved comment_style_php)
+  ; (".py", Resolved comment_style_python)
+  ; (".re", Resolved comment_style_c)
+  ; (".rei", Resolved comment_style_c)
+  ; (".sh", Resolved comment_style_shell)
+  ; ("dune", Dune)
+  ; ("dune.in", Dune)
+  ; ("dune.common", Dune)
+  ; ("dune.common.in", Dune)
+  ; ("dune-project", Resolved comment_style_lisp)
+  ; ("dune-workspace", Resolved comment_style_lisp)
+  ; ("dune-workspace.in", Resolved comment_style_lisp)
+  ; ("Makefile", Resolved comment_style_make) ]
+
+
+let tuareg_magic_style_line = "(* -*- tuareg -*- *)"
 
 let comment_style_of_filename fname =
   List.Assoc.find com_style_of_lang ~equal:Filename.check_suffix fname
+  |> Option.map ~f:(function
+       | Resolved comment_type ->
+           comment_type
+       | Dune ->
+           (* a dune file is in OCaml syntax if and only if its first line is a tuareg style line *)
+           let first_line =
+             In_channel.with_file fname ~f:(fun ic -> In_channel.input_line ic)
+             |> Option.map ~f:String.strip
+           in
+           if Option.exists first_line ~f:(fun line -> String.equal line tuareg_magic_style_line)
+           then comment_style_ocaml
+           else comment_style_lisp )
 
 
-let output_diff ~fname lines ?notice_range ?(monoidics = false) ?(ropas = false) ~copyright_year
-    com_style =
+let output_diff ~fname lines ?notice_range ?(monoidics = false) ?(ropas = false) com_style =
   let lang = lang_of_comment_style com_style in
   let pp_range_opt fmt = function
     | None ->
@@ -284,8 +284,8 @@ let output_diff ~fname lines ?notice_range ?(monoidics = false) ?(ropas = false)
     | Some (s, e) ->
         F.fprintf fmt "%d-%d" s e
   in
-  F.eprintf "%s (lang:%s notice:%a monoidics:%b ropas:%b year:%d)\n%!" fname lang pp_range_opt
-    notice_range monoidics ropas copyright_year ;
+  F.eprintf "%s (lang:%s notice:%a monoidics:%b ropas:%b)\n%!" fname lang pp_range_opt notice_range
+    monoidics ropas ;
   let pp_newfile fmt =
     let copy_lines_before, copy_lines_after =
       match notice_range with
@@ -299,9 +299,10 @@ let output_diff ~fname lines ?notice_range ?(monoidics = false) ?(ropas = false)
       F.fprintf fmt "%s\n" lines.(i)
     done ;
     if
-      starts_with_newline com_style && copy_lines_before > 0 && lines.(copy_lines_before - 1) <> ""
+      starts_with_newline com_style && copy_lines_before > 0
+      && not (String.is_empty lines.(copy_lines_before - 1))
     then F.fprintf fmt "@\n" ;
-    pp_copyright ~monoidics ~ropas ~copyright_year com_style fmt ;
+    pp_copyright ~monoidics ~ropas com_style fmt ;
     for i = copy_lines_after to Array.length lines - 1 do
       F.fprintf fmt "%s\n" lines.(i)
     done ;
@@ -321,10 +322,9 @@ let check_copyright fname =
   | None, None ->
       ()
   | None, Some com_style ->
-      let copyright_year = 1900 + (Unix.localtime (Unix.time ())).Unix.tm_year in
-      output_diff ~fname lines ~copyright_year com_style ;
+      output_diff ~fname lines com_style ;
       raise (CopyrightEvent CopyrightModified)
-  | Some n, fname_com_style -> (
+  | Some n, fname_com_style ->
       let cstart, contents_com_style =
         find_comment_start_and_style lines n |> Option.value ~default:(0, Line ("#", false))
       in
@@ -367,18 +367,10 @@ let check_copyright fname =
         raise (CopyrightEvent CopyrightMalformed) ) ;
       let monoidics = contains_monoidics cstart cend lines in
       let ropas = contains_ropas cstart cend lines in
-      match get_copyright_year cstart cend lines with
-      | None ->
-          F.eprintf "Can't find copyright year: %s@." fname ;
-          raise (CopyrightEvent CopyrightMalformed)
-      | Some copyright_year ->
-          if
-            copyright_has_changed fname lines ~notice_range:(cstart, cend) ~monoidics ~ropas
-              ~copyright_year com_style
-          then (
-            output_diff ~fname lines ~notice_range:(cstart, cend) ~monoidics ~ropas ~copyright_year
-              com_style ;
-            raise (CopyrightEvent CopyrightModified) ) )
+      if copyright_has_changed fname lines ~notice_range:(cstart, cend) ~monoidics ~ropas com_style
+      then (
+        output_diff ~fname lines ~notice_range:(cstart, cend) ~monoidics ~ropas com_style ;
+        raise (CopyrightEvent CopyrightModified) )
 
 
 let speclist =

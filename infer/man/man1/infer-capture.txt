@@ -2,8 +2,8 @@ NAME
        infer-capture - capture source files for later analysis
 
 SYNOPSIS
-       infer capture [options] -- buck ...
-       infer capture --flavors [options] -- buck ...
+       infer capture --buck-java [options] -- buck ...
+       infer capture --buck-clang [options] -- buck ...
        infer capture --buck-compilation-database [no-]deps [options] -- buck ...
        infer capture [options] --compilation-database file
        infer capture [options] --compilation-database-escaped file
@@ -24,9 +24,15 @@ DESCRIPTION
 
 
 OPTIONS
+       --continue
+           Activates: Continue the capture for the reactive analysis,
+           increasing the changed files/procedures. (If a procedure was
+           changed beforehand, keep the changed marking.) (Conversely:
+           --no-continue)
+
        --debug,-g
            Activates: Debug mode (also sets --debug-level 2,
-           --developer-mode, --no-filtering, --print-buckets, --print-types,
+           --developer-mode, --print-buckets, --print-types,
            --reports-include-ml-loc, --no-only-cheap-debug, --trace-error,
            --write-dotty, --write-html) (Conversely: --no-debug | -G)
 
@@ -39,15 +45,15 @@ OPTIONS
 
        --debug-level-analysis int
            Debug level for the analysis. See --debug-level for accepted
-           values. (default: 0)
+           values.
 
        --debug-level-capture int
            Debug level for the capture. See --debug-level for accepted
-           values. (default: 0)
+           values.
 
        --debug-level-linters int
            Debug level for the linters. See --debug-level for accepted
-           values. (default: 0)
+           values.
 
        --force-delete-results-dir
            Activates: Do not refuse to delete the results directory if it
@@ -66,7 +72,7 @@ OPTIONS
        --help-format { auto | groff | pager | plain }
            Show this help in the specified format. auto sets the format to
            plain if the environment variable TERM is "dumb" or undefined, and
-           to pager otherwise. (default: auto)
+           to pager otherwise.
 
        --help-full
            Show this manual with all internal options in the INTERNAL OPTIONS
@@ -82,85 +88,91 @@ OPTIONS
 
        --progress-bar-style { auto | plain | multiline }
            Style of the progress bar. auto selects multiline if connected to
-           a tty, otherwise plain. (default: auto)
+           a tty, otherwise plain.
 
        --project-root,-C dir
-           Specify the root directory of the project (default: .)
+           Specify the root directory of the project
 
        --results-dir,-o dir
            Write results and internal files in the specified directory
-           (default: ./infer-out)
 
        --skip-analysis-in-path +path_prefix_OCaml_regex
            Ignore files whose path matches the given prefix (can be specified
            multiple times)
 
+       --sqlite-cache-size int
+           SQLite cache size in pages (if positive) or kB (if negative),
+           follows formal of corresponding SQLite PRAGMA.
+
        --sqlite-lock-timeout int
            Timeout for SQLite results database operations, in milliseconds.
-           (default: five seconds times number of cores)
+
+       --sqlite-page-size int
+           SQLite page size in bytes, must be a power of two between 512 and
+           65536.
 
        --  Stop argument processing, use remaining arguments as a build
            command
-BUCK COMPILATION DATABASE OPTIONS
-       --buck-compilation-database { no-deps | deps }
-           Buck integration using the compilation database, with or without
-           dependencies.
-
-       --buck-compilation-database-depth int
-           Depth of dependencies used by the --buck-compilation-database deps
-           option. By default, all recursive dependencies are captured.
-
-       --buck-targets-blacklist +regex
-           Skip capture of buck targets matched by the specified regular
-           expression.
-BUCK FLAVORS OPTIONS
+BUCK OPTIONS
        --append-buck-flavors +string
            Additional Buck flavors to append to targets discovered by the
            --buck-compilation-database option.
 
        --buck-blacklist +regex
-           Skip capture of files matched by the specified regular expression
-           (only the "flavors (C++)" Buck integration is supported, not
-           Java).
+           Skip capture of files matched by the specified regular expression.
+           Only the clang, non-compilation-database                Buck integration is supported, not Java.
 
-       --capture-blacklist regex
-           Skip capture of files matched by the specified OCaml regular
-           expression (only supported by the javac integration for now).
+       --buck-clang
+           Activates: Buck integration for clang-based targets
+           (C/C++/Objective-C/Objective-C++). (Conversely: --no-buck-clang)
 
-       --flavors
-           Activates: Buck integration using Buck flavors (clang only), eg
-           `infer --flavors -- buck build //foo:bar#infer` (Conversely:
-           --no-flavors)
+       --buck-combined
+           Activates: Buck integration for clang-based and Java targets.
+           (Conversely: --no-buck-combined)
+
+       --buck-compilation-database { no-deps | deps }
+           Buck integration using the compilation database, with or without
+           dependencies. Only includes clang targets, as per Buck's
+           #compilation-database flavor.
+
+       --buck-compilation-database-depth int
+           Depth of dependencies used by the --buck-compilation-database deps
+           option. By default, all recursive dependencies are captured.
+
+       --buck-java
+           Activates: Buck integration for Java targets. (Conversely:
+           --no-buck-java)
+
+       --buck-merge-all-deps
+           Activates: Find and merge all infer dependencies produced by buck.
+           Use this flag if infer doesn't find any files to analyze after a
+           successful capture. Only valid for --buck-clang. (Conversely:
+           --no-buck-merge-all-deps)
+
+       --buck-targets-blacklist +regex
+           Skip capture of buck targets matched by the specified regular
+           expression. Only valid for --buck-compilation-database.
 
        --Xbuck +string
            Pass values as command-line arguments to invocations of `buck
-           build`
+           build`. Only valid for --buck-clang.
 
        --Xbuck-no-inline +string
            Pass values as command-line arguments to invocations of `buck
-           build`, don't inline any args starting with '@'
+           build`, don't inline any args starting with '@'. Only valid for
+           --buck-clang.
 
        --xcode-developer-dir XCODE_DEVELOPER_DIR
-           Specify the path to Xcode developer directory
-BUCK FOR JAVA OPTIONS
-       --buck-out dir
-           Specify the root directory of buck-out
+           Specify the path to Xcode developer directory, to use for Buck
+           clang targets
 CLANG LINTERS OPTIONS
        --debug-level-linters int
            Debug level for the linters. See --debug-level for accepted
-           values. (default: 0)
+           values.
 
        --no-default-linters
            Deactivates: Use the default linters for the analysis.
            (Conversely: --default-linters)
-
-       --iphoneos-target-sdk-version string
-           Specify the target SDK version to use for iphoneos
-
-       --iphoneos-target-sdk-version-path-regex +string
-           To pass a specific target SDK version to use for iphoneos in a
-           particular path, with the format path:version (can be specified
-           multiple times)
 
        --linter string
            From the linters available, only run this one linter. (Useful
@@ -196,6 +208,17 @@ CLANG OPTIONS
        --clang-biniou-file file
            Specify a file containing the AST of the program, in biniou format
 
+       --clang-blacklisted-flags +string
+           Clang flags to filter out
+
+       --clang-blacklisted-flags-with-arg +string
+           Clang flags (taking args) to filter out
+
+       --clang-compound-literal-init-limit int
+           Limit after which initialization of compound types (structs and
+           arrays) is not done element by element but using a builtin
+           function that each analysis has to model.
+
        --compilation-database +path
            File that contain compilation commands (can be specified multiple
            times)
@@ -205,19 +228,8 @@ CLANG OPTIONS
            escaped for the shell, eg coming from Xcode (can be specified
            multiple times)
 
-       --compute-analytics
-           Activates: Emit analytics as info-level issues, like component kit
-           line count and component kit file cyclomatic complexity
-           (Conversely: --no-compute-analytics)
-
        --no-cxx
            Deactivates: Analyze C++ methods (Conversely: --cxx)
-
-       --cxx-infer-headers
-           Activates: Include C++ header models during compilation. Infer
-           swaps some C++ headers for its own in order to get a better model
-           of, eg, the standard library. This can sometimes cause compilation
-           failures. (Conversely: --no-cxx-infer-headers)
 
        --dump-duplicate-symbols
            Activates: Dump all symbols with the same name that are defined in
@@ -246,6 +258,10 @@ JAVA OPTIONS
        --bootclasspath string
            Specify the Java bootclasspath
 
+       --capture-blacklist regex
+           Skip capture of files matched by the specified OCaml regular
+           expression (only supported by the javac integration for now).
+
        --dependencies
            Activates: Translate all the dependencies during the capture. The
            classes in the given jar file will be translated. No sources
@@ -256,6 +272,10 @@ JAVA OPTIONS
 
        --java-jar-compiler path
            Specify the Java compiler jar used to generate the bytecode
+
+       --java-version int
+           The version of Java being used. Set it to your Java version if mvn
+           is failing.
 
 
 ENVIRONMENT

@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -20,8 +20,8 @@ val compare : t -> t -> int
 (** compare integers ignoring the distinction between pointers and non-pointers *)
 
 val compare_value : t -> t -> int
-(** compare the value of the integers, notice this is different from const compare,
-    which distinguished between signed and unsigned +1 *)
+(** compare the value of the integers, notice this is different from const compare, which
+    distinguished between signed and unsigned +1 *)
 
 val div : t -> t -> t
 
@@ -88,6 +88,10 @@ val shift_left : t -> t -> t
 val shift_right : t -> t -> t
 
 val sub : t -> t -> t
+
+val max : t -> t -> t
+
+val min : t -> t -> t
 
 val to_int : t -> int option
 

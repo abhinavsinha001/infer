@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -65,7 +65,8 @@ module Jprop = struct
   (** Get identifies of the jprop *)
   let get_id = function Prop (n, _) -> n | Joined (n, _, _, _) -> n
 
-  (** Print a list of joined props, the boolean indicates whether to print subcomponents of joined props *)
+  (** Print a list of joined props, the boolean indicates whether to print subcomponents of joined
+      props *)
   let pp_list pe ~shallow f jplist =
     let rec pp_seq_newline f = function
       | [] ->
@@ -125,6 +126,13 @@ module Jprop = struct
     do_filter [] jpl
 
 
+  let shallow_map ~f = function
+    | Prop (n, p) ->
+        Prop (n, f p)
+    | Joined (n, p, jp1, jp2) ->
+        Joined (n, f p, jp1, jp2)
+
+
   let rec map (f : 'a Prop.t -> 'b Prop.t) = function
     | Prop (n, p) ->
         Prop (n, f p)
@@ -155,9 +163,10 @@ module Visitedset = struct
 end
 
 (** A spec consists of:
-    pre: a joined prop
-    post: a list of props with path
-    visited: a list of pairs (node_id, line) for the visited nodes *)
+
+    - pre: a joined prop
+    - post: a list of props with path
+    - visited: a list of pairs (node_id, line) for the visited nodes *)
 type 'a spec = {pre: 'a Jprop.t; posts: ('a Prop.t * Paths.Path.t) list; visited: Visitedset.t}
 
 (** encapsulate type for normalized specs *)
@@ -166,17 +175,17 @@ module NormSpec : sig
 
   val normalize : Tenv.t -> Prop.normal spec -> t
 
-  val tospecs : t list -> Prop.normal spec list
-
-  val compact : Sil.sharing_env -> t -> t
+  val compact : Predicates.sharing_env -> t -> t
   (** Return a compact representation of the spec *)
+
+  val tospec : t -> Prop.normal spec
 
   val erase_join_info_pre : Tenv.t -> t -> t
   (** Erase join info from pre of spec *)
 end = struct
   type t = Prop.normal spec
 
-  let tospecs specs = specs
+  let tospec spec = spec
 
   let gen_free_vars tenv (spec : Prop.normal spec) =
     let open Sequence.Generator in
@@ -195,12 +204,11 @@ end = struct
     ; visited= spec.visited }
 
 
-  (** Convert spec into normal form w.r.t. variable renaming *)
   let normalize tenv (spec : Prop.normal spec) : Prop.normal spec =
     let idlist = free_vars tenv spec |> Ident.hashqueue_of_sequence |> Ident.HashQueue.keys in
     let count = ref 0 in
     let sub =
-      Sil.subst_of_list
+      Predicates.subst_of_list
         (List.map
            ~f:(fun id ->
              incr count ;
@@ -223,11 +231,13 @@ end = struct
     normalize tenv spec'
 end
 
-(** Convert spec into normal form w.r.t. variable renaming *)
+(** Convert spec into normal form *)
 let spec_normalize = NormSpec.normalize
 
+let expose = NormSpec.tospec
+
 (** Cast a list of normalized specs to a list of specs *)
-let normalized_specs_to_specs = NormSpec.tospecs
+let normalized_specs_to_specs = List.map ~f:NormSpec.tospec
 
 type phase = FOOTPRINT | RE_EXECUTION [@@deriving compare]
 
@@ -259,7 +269,7 @@ let pp_spec0 pe num_opt fmt spec =
       F.fprintf fmt "--------------------------- %a ---------------------------@\n" pp_num_opt
         num_opt ;
       F.fprintf fmt "PRE:@\n" ;
-      Io_infer.Html.with_color Blue (Prop.pp_prop (Pp.html Blue)) fmt pre ;
+      Pp.html_with_color Blue (Prop.pp_prop (Pp.html Blue)) fmt pre ;
       F.pp_force_newline fmt () ;
       Propgraph.pp_proplist pe_post "POST" (pre, true) fmt post_list ;
       F.pp_print_string fmt "----------------------------------------------------------------"
@@ -277,11 +287,16 @@ let pp_specs pe fmt specs =
           F.fprintf fmt "%a<br>@\n" (pp_spec0 pe (Some (cnt + 1, total))) spec )
 
 
-let get_specs_from_preposts preposts = Option.value_map ~f:NormSpec.tospecs ~default:[] preposts
+let get_specs_from_preposts preposts =
+  Option.value_map ~f:(List.map ~f:NormSpec.tospec) ~default:[] preposts
+
 
 type t = {preposts: NormSpec.t list; phase: phase}
 
 let opt_get_phase = function None -> FOOTPRINT | Some {phase} -> phase
 
+let get_specs {preposts} = get_specs_from_preposts (Some preposts)
+
 let pp pe fmt {preposts; phase} =
-  F.fprintf fmt "phase= %s@\n%a" (string_of_phase phase) (pp_specs pe) (NormSpec.tospecs preposts)
+  F.fprintf fmt "phase= %s@\n%a" (string_of_phase phase) (pp_specs pe)
+    (List.map ~f:NormSpec.tospec preposts)

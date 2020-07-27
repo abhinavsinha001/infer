@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,9 +7,27 @@
 
 open! IStd
 
-(** type of string used for localisation *)
+(** visibility of the issue type *)
+type visibility =
+  | User  (** always add to error log *)
+  | Developer  (** only add to error log in some debug modes *)
+  | Silent  (** never add to error log *)
+[@@deriving compare, equal]
+
+val string_of_visibility : visibility -> string
+
+(** severity of the report *)
+type severity = Like | Info | Advice | Warning | Error [@@deriving compare, equal, enumerate]
+
+val string_of_severity : severity -> string
+
 type t = private
   { unique_id: string
+  ; checker: Checker.t
+  ; visibility: visibility
+  ; user_documentation: string option
+  ; mutable default_severity: severity
+        (** used for documentation but can be overriden at report time *)
   ; mutable enabled: bool
   ; mutable hum: string
   ; mutable doc_url: string option
@@ -24,15 +42,32 @@ val all_issues : unit -> t list
 val pp : Format.formatter -> t -> unit
 (** pretty print a localised string *)
 
-val from_string :
-  ?enabled:bool -> ?hum:string -> ?doc_url:string -> ?linters_def_file:string -> string -> t
-(** create from an ordinary string *)
+val find_from_string : id:string -> t option
+(** return the issue type if it was previously registered *)
+
+val register_dynamic :
+     ?enabled:bool
+  -> ?hum:string
+  -> ?doc_url:string
+  -> linters_def_file:string option
+  -> id:string
+  -> ?user_documentation:string
+  -> severity
+  -> Checker.t
+  -> t
+(** Create a new issue and register it in the list of all issues. NOTE: if the issue with the same
+    string id is already registered, overrides `hum`, `doc_url`, and `linters_def_file`, but DOES
+    NOT override `enabled`. This trick allows to deal with disabling/enabling dynamic AL issues from
+    the config, when we don't know all params yet. Thus, the human-readable description can be
+    updated when we encounter the definition of the issue type, eg in AL. *)
+
+val checker_can_report : Checker.t -> t -> bool
+(** Whether the issue was registered as coming from the given checker. Important to call this before
+    reporting to keep documentation accurate. *)
 
 val set_enabled : t -> bool -> unit
 
 val abduction_case_not_implemented : t
-
-val analysis_stops : t
 
 val array_of_pointsto : t
 
@@ -46,6 +81,8 @@ val assert_failure : t
 
 val bad_footprint : t
 
+val biabduction_analysis_stops : t
+
 val buffer_overrun_l1 : t
 
 val buffer_overrun_l2 : t
@@ -56,27 +93,27 @@ val buffer_overrun_l4 : t
 
 val buffer_overrun_l5 : t
 
-val buffer_overrun_r2 : t
-
 val buffer_overrun_s2 : t
 
 val buffer_overrun_u5 : t
 
 val cannot_star : t
 
+val captured_strong_self : t
+
 val checkers_allocates_memory : t
-(** Warning name when a performance critical method directly or indirectly
-    calls a method allocating memory *)
+(** Warning name when a performance critical method directly or indirectly calls a method allocating
+    memory *)
 
 val checkers_annotation_reachability_error : t
 
 val checkers_calls_expensive_method : t
-(** Warning name when a performance critical method directly or indirectly
-    calls a method annotatd as expensive *)
+(** Warning name when a performance critical method directly or indirectly calls a method annotatd
+    as expensive *)
 
 val checkers_expensive_overrides_unexpensive : t
-(** Warning name for the subtyping rule: method not annotated as expensive cannot be overridden
-    by a method annotated as expensive *)
+(** Warning name for the subtyping rule: method not annotated as expensive cannot be overridden by a
+    method annotated as expensive *)
 
 val checkers_fragment_retain_view : t
 
@@ -86,27 +123,17 @@ val checkers_printf_args : t
 
 val class_cast_exception : t
 
-val class_load : t
-
-val codequery : t
-
-val comparing_floats_for_equality : t
-
-val component_factory_function : t
-
-val component_file_cyclomatic_complexity : t
-
-val component_file_line_count : t
-
-val component_initializer_with_side_effects : t
+val complexity_increase : kind:CostKind.t -> is_on_ui_thread:bool -> t
 
 val component_with_multiple_factory_methods : t
-
-val component_with_unconventional_superclass : t
 
 val condition_always_false : t
 
 val condition_always_true : t
+
+val config_checks_between_markers : t
+
+val constant_address_dereference : t
 
 val create_intent_from_uri : t
 
@@ -114,15 +141,11 @@ val cross_site_scripting : t
 
 val dangling_pointer_dereference : t
 
+val dangling_pointer_dereference_maybe : t
+
 val dead_store : t
 
 val deadlock : t
-
-val deallocate_stack_variable : t
-
-val deallocate_static_memory : t
-
-val deallocation_mismatch : t
 
 val divide_by_zero : t
 
@@ -133,43 +156,37 @@ val empty_vector_access : t
 
 val eradicate_condition_redundant : t
 
-val eradicate_condition_redundant_nonnull : t
-
 val eradicate_field_not_initialized : t
-
-val eradicate_field_not_mutable : t
 
 val eradicate_field_not_nullable : t
 
 val eradicate_field_over_annotated : t
 
-val eradicate_field_value_absent : t
-
 val eradicate_inconsistent_subclass_parameter_annotation : t
 
 val eradicate_inconsistent_subclass_return_annotation : t
+
+val eradicate_redundant_nested_class_annotation : t
+
+val eradicate_bad_nested_class_annotation : t
 
 val eradicate_nullable_dereference : t
 
 val eradicate_parameter_not_nullable : t
 
-val eradicate_parameter_value_absent : t
-
 val eradicate_return_not_nullable : t
 
 val eradicate_return_over_annotated : t
 
-val eradicate_return_value_not_present : t
+val eradicate_unvetted_third_party_in_nullsafe : t
 
-val eradicate_value_not_present : t
+val eradicate_unchecked_usage_in_nullsafe : t
 
-val expensive_execution_time_call : t
+val eradicate_meta_class_can_be_nullsafe : t
 
-val expensive_allocation_call : t
+val eradicate_meta_class_needs_improvement : t
 
-val expensive_IO_call : t
-
-val expensive_execution_time_call_cold_start : t
+val eradicate_meta_class_is_nullsafe : t
 
 val exposed_insecure_intent_handling : t
 
@@ -177,9 +194,11 @@ val failure_exe : t
 
 val field_not_null_checked : t
 
-val graphql_field_access : t
-
 val guardedby_violation_racerd : t
+
+val impure_function : t
+
+val inefficient_keyset_iterator : t
 
 val inferbo_alloc_is_big : t
 
@@ -191,7 +210,7 @@ val inferbo_alloc_may_be_big : t
 
 val inferbo_alloc_may_be_negative : t
 
-val infinite_execution_time_call : t
+val infinite_cost_call : kind:CostKind.t -> t
 
 val inherently_dangerous_function : t
 
@@ -203,8 +222,6 @@ val integer_overflow_l2 : t
 
 val integer_overflow_l5 : t
 
-val integer_overflow_r2 : t
-
 val integer_overflow_u5 : t
 
 val interface_not_thread_safe : t
@@ -215,9 +232,15 @@ val invariant_call : t
 
 val javascript_injection : t
 
+val lab_resource_leak : t
+
 val leak_after_array_abstraction : t
 
 val leak_in_footprint : t
+
+val leak_unknown_origin : t
+
+val lockless_violation : t
 
 val lock_consistency_violation : t
 
@@ -231,23 +254,19 @@ val missing_fld : t
 
 val missing_required_prop : t
 
+val mixed_self_weakself : t
+
+val multiple_weakself : t
+
 val mutable_local_variable_in_component_file : t
 
 val null_dereference : t
 
-val null_test_after_dereference : t
+val nullptr_dereference : t
 
-val nullsafe_field_not_nullable : t
-
-val nullsafe_nullable_dereference : t
+val optional_empty_access : t
 
 val parameter_not_null_checked : t
-
-val performance_variation : t
-
-val performance_variation_critical_cold_start : t
-
-val pointer_size_mismatch : t
 
 val precondition_not_found : t
 
@@ -255,25 +274,17 @@ val precondition_not_met : t
 
 val premature_nil_termination : t
 
+val pulse_memory_leak : t
+
 val pure_function : t
 
 val quandary_taint_error : t
-
-val registered_observer_being_deallocated : t
 
 val resource_leak : t
 
 val retain_cycle : t
 
-val return_expression_required : t
-
-val return_statement_missing : t
-
-val return_value_ignored : t
-
 val skip_function : t
-
-val skip_pointer_dereference : t
 
 val shell_injection : t
 
@@ -291,23 +302,17 @@ val static_initialization_order_fiasco : t
 
 val strict_mode_violation : t
 
+val strong_self_not_checked : t
+
 val symexec_memory_error : t
-
-val tainted_buffer_access : t
-
-val tainted_memory_allocation : t
 
 val thread_safety_violation : t
 
-val unary_minus_applied_to_unsigned_expression : t
+val topl_error : t
 
 val uninitialized_value : t
 
-val unknown_proc : t
-
 val unreachable_code_after : t
-
-val unsafe_guarded_by_access : t
 
 val use_after_delete : t
 
@@ -339,6 +344,8 @@ val user_controlled_sql_risk : t
 
 val vector_invalidation : t
 
+val weak_self_in_noescape_block : t
+
 val wrong_argument_number : t
 
-val zero_execution_time_call : t
+val unreachable_cost_call : kind:CostKind.t -> t

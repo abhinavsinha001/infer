@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,15 +8,13 @@
 open! IStd
 module F = Format
 
+(** Extension of {!Base.Container}, i.e. generic definitions of container operations in terms of a
+    [fold] function. *)
+
 type 'a singleton_or_more = Empty | Singleton of 'a | More
 
 val singleton_or_more :
   fold:('t, 'a, 'a singleton_or_more) Container.fold -> 't -> 'a singleton_or_more
-
-(* O(1) *)
-
-val is_singleton : fold:('t, 'a, 'a singleton_or_more) Container.fold -> 't -> bool
-  [@@warning "-32"]
 
 val mem_nth : fold:('t, _, int) Container.fold -> 't -> int -> bool
 
@@ -33,8 +31,7 @@ val rev_map_to_list : fold:('t, 'a, 'b list) Container.fold -> 't -> f:('a -> 'b
 val rev_filter_map_to_list :
   fold:('t, 'a, 'b list) Container.fold -> 't -> f:('a -> 'b option) -> 'b list
 
-val iter_consecutive :
-  fold:('t, 'a, 'a option) Container.fold -> 't -> f:('a -> 'a -> unit) -> unit
+val iter_consecutive : fold:('t, 'a, 'a option) Container.fold -> 't -> f:('a -> 'a -> unit) -> unit
 
 val pp_collection :
      fold:('t, 'a, 'a option) Container.fold
@@ -54,3 +51,11 @@ val fold_of_pervasives_map_fold :
 
 val iter_result :
   fold:('t, 'a, unit) Container.fold -> 't -> f:('a -> (unit, 'err) result) -> (unit, 'err) result
+
+val fold_result_until :
+     fold:('t, 'a, 'accum) Container.fold
+  -> init:'accum
+  -> f:('accum -> 'a -> (('accum, 'err) Result.t, 'final) Continue_or_stop.t)
+  -> finish:('accum -> 'final)
+  -> 't
+  -> ('final, 'err) Result.t

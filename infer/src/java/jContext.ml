@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -26,7 +26,7 @@ type t =
   ; goto_jumps: (int, jump_kind) Hashtbl.t
   ; cn: JBasics.class_name
   ; source_file: SourceFile.t
-  ; program: JClasspath.program }
+  ; program: JProgramDesc.t }
 
 let create_context icfg procdesc impl cn source_file program =
   { icfg
@@ -49,10 +49,8 @@ let get_or_set_pvar_type context var typ =
   try
     let pvar, otyp, _ = JBir.VarMap.find var var_map in
     let tenv = get_tenv context in
-    if
-      Prover.Subtyping_check.check_subtype tenv typ otyp
-      || Prover.Subtyping_check.check_subtype tenv otyp typ
-    then set_var_map context (JBir.VarMap.add var (pvar, otyp, typ) var_map)
+    if SubtypingCheck.check_subtype tenv typ otyp || SubtypingCheck.check_subtype tenv otyp typ then
+      set_var_map context (JBir.VarMap.add var (pvar, otyp, typ) var_map)
     else set_var_map context (JBir.VarMap.add var (pvar, typ, typ) var_map) ;
     (pvar, typ)
   with Caml.Not_found ->
@@ -101,9 +99,9 @@ let is_goto_jump context pc =
   with Caml.Not_found -> false
 
 
-let exn_node_table = Typ.Procname.Hash.create 100
+let exn_node_table = Procname.Hash.create 100
 
-let reset_exn_node_table () = Typ.Procname.Hash.clear exn_node_table
+let reset_exn_node_table () = Procname.Hash.clear exn_node_table
 
 let add_exn_node procname (exn_node : Procdesc.Node.t) =
-  Typ.Procname.Hash.add exn_node_table procname exn_node
+  Procname.Hash.add exn_node_table procname exn_node

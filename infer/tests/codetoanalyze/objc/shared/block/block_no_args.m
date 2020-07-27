@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,12 +9,12 @@
 
 int g;
 
-@interface My_manager : NSObject
+@interface Block_no_args : NSObject
 - (int)m;
 
 @end
 
-@implementation My_manager
+@implementation Block_no_args
 
 - (int)m {
   g = 7;

@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,11 +7,13 @@
 open! IStd
 module L = Logging
 
+let al_callback_ref = ref (fun _ _ -> ())
+
 (** enable debug mode (to get more data saved to disk for future inspections) *)
 let debug_mode = Config.debug_mode || Config.frontend_stats
 
 (** This function reads the json file in fname, validates it, and encodes in the AST data structure
-    defined in Clang_ast_t.  *)
+    defined in Clang_ast_t. *)
 let validate_decl_from_file fname =
   Atdgen_runtime.Util.Biniou.from_file ~len:CFrontend_config.biniou_buffer_size
     Clang_ast_b.read_decl fname
@@ -22,25 +24,9 @@ let validate_decl_from_channel chan =
     Clang_ast_b.read_decl chan
 
 
-let register_perf_stats_report source_file =
-  let stats_type =
-    match (Config.capture, Config.linters) with
-    | true, true ->
-        PerfStats.ClangFrontendLinters source_file
-    | true, false ->
-        PerfStats.ClangFrontend source_file
-    | false, true ->
-        PerfStats.ClangLinters source_file
-    | false, false ->
-        Logging.(die UserError) "Clang frontend should be run in capture and/or linters mode."
-  in
-  PerfStats.register_report_at_exit stats_type
-
-
 let init_global_state_for_capture_and_linters source_file =
   L.(debug Capture Medium) "Processing %s" (Filename.basename (SourceFile.to_abs_path source_file)) ;
   Language.curr_language := Language.Clang ;
-  register_perf_stats_report source_file ;
   if Config.capture then DB.Results_dir.init source_file ;
   CFrontend_config.reset_global_state ()
 
@@ -95,13 +81,14 @@ let run_clang_frontend ast_source =
         Format.fprintf fmt "stdin of %a" SourceFile.pp trans_unit_ctx.CFrontend_config.source_file
   in
   ClangPointers.populate_all_tables ast_decl ;
-  L.(debug Capture Quiet) "Clang frontend action is %s@\n" Config.clang_frontend_action_string ;
   L.(debug Capture Medium)
-    "Start %s of AST from %a@\n" Config.clang_frontend_action_string pp_ast_filename ast_source ;
-  if Config.linters then CFrontend_checkers_main.do_frontend_checks trans_unit_ctx ast_decl ;
+    "Start %s the AST of %a@\n" Config.clang_frontend_action_string pp_ast_filename ast_source ;
+  (* run callbacks *)
+  !al_callback_ref trans_unit_ctx ast_decl ;
+  if Config.process_clang_ast then ProcessAST.process_ast trans_unit_ctx ast_decl ;
   if Config.capture then CFrontend.do_source_file trans_unit_ctx ast_decl ;
   L.(debug Capture Medium)
-    "End %s of AST file %a... OK!@\n" Config.clang_frontend_action_string pp_ast_filename
+    "End %s the AST of file %a... OK!@\n" Config.clang_frontend_action_string pp_ast_filename
     ast_source ;
   print_elapsed ()
 
@@ -185,8 +172,7 @@ let cc1_capture clang_cmd =
   else if
     Config.skip_analysis_in_path_skips_compilation && CLocation.is_file_blacklisted source_path
   then (
-    L.(debug Capture Quiet)
-      "@\n Skip compilation and analysis of source file %s@\n@\n" source_path ;
+    L.(debug Capture Quiet) "@\n Skip compilation and analysis of source file %s@\n@\n" source_path ;
     () )
   else
     match Config.clang_biniou_file with
@@ -203,7 +189,7 @@ let capture clang_cmd =
     (* this command compiles some code; replace the invocation of clang with our own clang and
        plugin *)
     cc1_capture clang_cmd
-  else if Option.is_some Config.buck_compilation_database then
+  else if Option.exists Config.buck_mode ~f:BuckMode.is_clang_compilation_db then
     (* when running with buck's compilation-database, skip commands where frontend cannot be
        attached, as they may cause unnecessary compilation errors *)
     ()
@@ -213,4 +199,5 @@ let capture clang_cmd =
        absolute paths. *)
     L.(debug Capture Medium)
       "Running non-cc command without capture: %a@\n" ClangCommand.pp clang_cmd ;
-    run_clang clang_cmd Utils.echo_in )
+    run_clang clang_cmd Utils.echo_in ;
+    () )

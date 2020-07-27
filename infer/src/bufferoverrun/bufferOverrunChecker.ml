@@ -1,44 +1,35 @@
 (*
  * Copyright (c) 2016-present, Programming Research Laboratory (ROPAS)
  *                             Seoul National University, Korea
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *)
 
 open! IStd
-open AbsLoc
 open! AbstractDomain.Types
+module BoSummary = BufferOverrunAnalysisSummary
 module BoUtils = BufferOverrunUtils
 module CFG = BufferOverrunAnalysis.CFG
 module Dom = BufferOverrunDomain
+module F = Format
 module L = Logging
 module Models = BufferOverrunModels
 module PO = BufferOverrunProofObligations
-module Relation = BufferOverrunDomainRelation
 module Sem = BufferOverrunSemantics
 module Trace = BufferOverrunTrace
-
-module Payload = SummaryPayload.Make (struct
-  type t = BufferOverrunCheckerSummary.t
-
-  let update_payloads astate (payloads : Payloads.t) =
-    {payloads with buffer_overrun_checker= Some astate}
-
-
-  let of_payloads (payloads : Payloads.t) = payloads.buffer_overrun_checker
-end)
 
 module UnusedBranch = struct
   type t = {node: CFG.Node.t; location: Location.t; condition: Exp.t; true_branch: bool}
 
-  let report tenv summary {node; location; condition; true_branch} =
+  let report {InterproceduralAnalysis.proc_desc; tenv; err_log}
+      {node; location; condition; true_branch} =
     let desc =
       let err_desc =
         let i = match condition with Exp.Const (Const.Cint i) -> i | _ -> IntLit.zero in
-        Errdesc.explain_condition_always_true_false tenv i condition
-          (CFG.Node.underlying_node node) location
+        Errdesc.explain_condition_always_true_false tenv i condition (CFG.Node.underlying_node node)
+          location
       in
       F.asprintf "%a" Localise.pp_error_desc err_desc
     in
@@ -46,7 +37,7 @@ module UnusedBranch = struct
       if true_branch then IssueType.condition_always_false else IssueType.condition_always_true
     in
     let ltr = [Errlog.make_trace_element 0 location "Here" []] in
-    Reporting.log_warning summary ~loc:location ~ltr issue_type desc
+    Reporting.log_issue proc_desc err_log ~loc:location ~ltr BufferOverrunChecker issue_type desc
 end
 
 module UnusedBranches = struct
@@ -54,17 +45,17 @@ module UnusedBranches = struct
 
   let empty = []
 
-  let report tenv summary unused_branches =
-    List.iter unused_branches ~f:(UnusedBranch.report tenv summary)
+  let report analysis_data unused_branches =
+    List.iter unused_branches ~f:(UnusedBranch.report analysis_data)
 end
 
 module UnreachableStatement = struct
   type t = {location: Location.t}
 
-  let report summary {location} =
+  let report {InterproceduralAnalysis.proc_desc; err_log} {location} =
     let ltr = [Errlog.make_trace_element 0 location "Here" []] in
-    Reporting.log_error summary ~loc:location ~ltr IssueType.unreachable_code_after
-      "Unreachable code after statement"
+    Reporting.log_issue proc_desc err_log ~loc:location ~ltr BufferOverrunChecker
+      IssueType.unreachable_code_after "Unreachable code after statement"
 end
 
 module UnreachableStatements = struct
@@ -72,8 +63,8 @@ module UnreachableStatements = struct
 
   let empty = []
 
-  let report summary unreachable_statements =
-    List.iter unreachable_statements ~f:(UnreachableStatement.report summary)
+  let report analysis_data unreachable_statements =
+    List.iter unreachable_statements ~f:(UnreachableStatement.report analysis_data)
 end
 
 module Checks = struct
@@ -92,7 +83,7 @@ module ExitStatement = struct
   (* check that we are the last significant instruction
      * of a procedure (no more significant instruction)
      * or of a block (goes directly to a node with multiple predecessors)
-     *)
+  *)
   let rec is_end_of_block_or_procedure (cfg : CFG.t) node rem_instrs =
     Instrs.for_all rem_instrs ~f:Sil.instr_is_auxiliary
     &&
@@ -116,7 +107,7 @@ let add_unreachable_code (cfg : CFG.t) (node : CFG.Node.t) instr rem_instrs (che
       {checks with unused_branches= unused_branch :: checks.unused_branches}
   (* special case for `exit` when we're at the end of a block / procedure *)
   | Sil.Call (_, Const (Cfun pname), _, _, _)
-    when String.equal (Typ.Procname.get_method pname) "exit"
+    when String.equal (Procname.get_method pname) "exit"
          && ExitStatement.is_end_of_block_or_procedure cfg node rem_instrs ->
       checks
   | _ ->
@@ -137,11 +128,8 @@ let check_binop_array_access :
  fun integer_type_widths ~is_plus ~e1 ~e2 location mem cond_set ->
   let arr = Sem.eval integer_type_widths e1 mem in
   let idx = Sem.eval integer_type_widths e2 mem in
-  let idx_sym_exp = Relation.SymExp.of_exp ~get_sym_f:(Sem.get_sym_f integer_type_widths mem) e2 in
-  let relation = Dom.Mem.get_relation mem in
   let latest_prune = Dom.Mem.get_latest_prune mem in
-  BoUtils.Check.array_access ~arr ~idx ~idx_sym_exp ~relation ~is_plus ~last_included:false
-    ~latest_prune location cond_set
+  BoUtils.Check.array_access ~arr ~idx ~is_plus ~last_included:false ~latest_prune location cond_set
 
 
 let check_binop :
@@ -164,13 +152,14 @@ let check_binop :
 
 
 let check_expr_for_array_access :
-       Typ.IntegerWidths.t
+       ?sub_expr_only:bool
+    -> Typ.IntegerWidths.t
     -> Exp.t
     -> Location.t
     -> Dom.Mem.t
     -> PO.ConditionSet.checked_t
     -> PO.ConditionSet.checked_t =
- fun integer_type_widths exp location mem cond_set ->
+ fun ?(sub_expr_only = false) integer_type_widths exp location mem cond_set ->
   let rec check_sub_expr exp cond_set =
     match exp with
     | Exp.Lindex (array_exp, index_exp) ->
@@ -184,96 +173,93 @@ let check_expr_for_array_access :
     | Exp.Cast (_, e) ->
         check_sub_expr e cond_set
     | Exp.Closure {captured_vars} ->
-        List.fold captured_vars ~init:cond_set ~f:(fun cond_set (e, _, _) ->
+        List.fold captured_vars ~init:cond_set ~f:(fun cond_set (e, _, _, _) ->
             check_sub_expr e cond_set )
     | Exp.Var _ | Exp.Lvar _ | Exp.Const _ | Exp.Sizeof _ ->
         cond_set
   in
   let cond_set = check_sub_expr exp cond_set in
-  match exp with
-  | Exp.Var _ ->
-      let arr = Sem.eval integer_type_widths exp mem in
-      let idx, idx_sym_exp = (Dom.Val.Itv.zero, Some Relation.SymExp.zero) in
-      let relation = Dom.Mem.get_relation mem in
-      let latest_prune = Dom.Mem.get_latest_prune mem in
-      BoUtils.Check.array_access ~arr ~idx ~idx_sym_exp ~relation ~is_plus:true
-        ~last_included:false ~latest_prune location cond_set
-  | Exp.BinOp (bop, e1, e2) ->
-      check_binop integer_type_widths ~bop ~e1 ~e2 location mem cond_set
-  | _ ->
-      cond_set
+  if sub_expr_only then cond_set
+  else
+    match exp with
+    | Exp.Var _ ->
+        let arr = Sem.eval integer_type_widths exp mem in
+        let idx = Dom.Val.Itv.zero in
+        let latest_prune = Dom.Mem.get_latest_prune mem in
+        BoUtils.Check.array_access ~arr ~idx ~is_plus:true ~last_included:false ~latest_prune
+          location cond_set
+    | Exp.BinOp (bop, e1, e2) ->
+        check_binop integer_type_widths ~bop ~e1 ~e2 location mem cond_set
+    | _ ->
+        cond_set
 
 
-let check_binop_for_integer_overflow integer_type_widths bop ~lhs ~rhs location mem cond_set =
+let check_binop_for_integer_overflow integer_type_widths pname bop ~lhs ~rhs location mem cond_set =
   match bop with
+  | Binop.MinusA (Some typ) when Typ.ikind_is_unsigned typ && Exp.is_zero lhs && Exp.is_const rhs ->
+      cond_set
   | Binop.PlusA (Some _) | Binop.MinusA (Some _) | Binop.Mult (Some _) ->
       let lhs_v = Sem.eval integer_type_widths lhs mem in
       let rhs_v = Sem.eval integer_type_widths rhs mem in
       let latest_prune = Dom.Mem.get_latest_prune mem in
-      BoUtils.Check.binary_operation integer_type_widths bop ~lhs:lhs_v ~rhs:rhs_v ~latest_prune
-        location cond_set
+      BoUtils.Check.binary_operation integer_type_widths pname bop ~lhs:lhs_v ~rhs:rhs_v
+        ~latest_prune location cond_set
   | _ ->
       cond_set
 
 
-let rec check_expr_for_integer_overflow integer_type_widths exp location mem cond_set =
+let rec check_expr_for_integer_overflow integer_type_widths pname exp location mem cond_set =
   match exp with
   | Exp.UnOp (_, e, _)
   | Exp.Exn e
   | Exp.Lfield (e, _, _)
   | Exp.Cast (_, e)
   | Exp.Sizeof {dynamic_length= Some e} ->
-      check_expr_for_integer_overflow integer_type_widths e location mem cond_set
+      check_expr_for_integer_overflow integer_type_widths pname e location mem cond_set
   | Exp.BinOp (bop, lhs, rhs) ->
       cond_set
-      |> check_binop_for_integer_overflow integer_type_widths bop ~lhs ~rhs location mem
-      |> check_expr_for_integer_overflow integer_type_widths lhs location mem
-      |> check_expr_for_integer_overflow integer_type_widths rhs location mem
+      |> check_binop_for_integer_overflow integer_type_widths pname bop ~lhs ~rhs location mem
+      |> check_expr_for_integer_overflow integer_type_widths pname lhs location mem
+      |> check_expr_for_integer_overflow integer_type_widths pname rhs location mem
   | Exp.Lindex (e1, e2) ->
       cond_set
-      |> check_expr_for_integer_overflow integer_type_widths e1 location mem
-      |> check_expr_for_integer_overflow integer_type_widths e2 location mem
+      |> check_expr_for_integer_overflow integer_type_widths pname e1 location mem
+      |> check_expr_for_integer_overflow integer_type_widths pname e2 location mem
   | Exp.Closure {captured_vars} ->
-      List.fold captured_vars ~init:cond_set ~f:(fun cond_set (e, _, _) ->
-          check_expr_for_integer_overflow integer_type_widths e location mem cond_set )
+      List.fold captured_vars ~init:cond_set ~f:(fun cond_set (e, _, _, _) ->
+          check_expr_for_integer_overflow integer_type_widths pname e location mem cond_set )
   | Exp.Var _ | Exp.Const _ | Exp.Lvar _ | Exp.Sizeof {dynamic_length= None} ->
       cond_set
 
 
 let instantiate_cond :
-       Tenv.t
+       is_params_ref:bool
     -> Typ.IntegerWidths.t
-    -> Typ.Procname.t
+    -> Procname.t
     -> (Pvar.t * Typ.t) list
     -> (Exp.t * Typ.t) list
     -> Dom.Mem.t
-    -> BufferOverrunAnalysisSummary.t
     -> BufferOverrunCheckerSummary.t
     -> Location.t
     -> PO.ConditionSet.checked_t =
- fun tenv integer_type_widths callee_pname callee_formals params caller_mem callee_exit_mem
-     callee_cond location ->
-  let rel_subst_map =
-    Sem.get_subst_map tenv integer_type_widths callee_formals params caller_mem callee_exit_mem
-  in
-  let caller_rel = Dom.Mem.get_relation caller_mem in
+ fun ~is_params_ref integer_type_widths callee_pname callee_formals params caller_mem callee_cond
+     location ->
   let eval_sym_trace =
-    Sem.mk_eval_sym_trace integer_type_widths callee_formals params caller_mem
+    Sem.mk_eval_sym_trace ~is_params_ref integer_type_widths callee_formals params caller_mem
   in
   let latest_prune = Dom.Mem.get_latest_prune caller_mem in
-  PO.ConditionSet.subst callee_cond eval_sym_trace rel_subst_map caller_rel callee_pname location
-    latest_prune
+  PO.ConditionSet.subst callee_cond eval_sym_trace callee_pname location latest_prune
 
 
 type checks_summary = BufferOverrunCheckerSummary.t
 
-type get_proc_summary =
-     Typ.Procname.t
-  -> (BufferOverrunAnalysisSummary.t * (Pvar.t * Typ.t) list * checks_summary) option
+type get_checks_summary = Procname.t -> checks_summary option
 
 let check_instr :
-       get_proc_summary
-    -> Procdesc.t
+       get_checks_summary
+    -> BoSummary.get_summary
+    -> BoUtils.get_formals
+    -> Procname.t
     -> Tenv.t
     -> Typ.IntegerWidths.t
     -> CFG.Node.t
@@ -281,40 +267,49 @@ let check_instr :
     -> Dom.Mem.t
     -> PO.ConditionSet.checked_t
     -> PO.ConditionSet.checked_t =
- fun get_proc_summary pdesc tenv integer_type_widths node instr mem cond_set ->
+ fun get_checks_summary get_summary get_formals pname tenv integer_type_widths node instr mem
+     cond_set ->
   match instr with
-  | Sil.Load (_, exp, _, location) ->
+  | Sil.Load {e= exp; loc= location} ->
       cond_set
       |> check_expr_for_array_access integer_type_widths exp location mem
-      |> check_expr_for_integer_overflow integer_type_widths exp location mem
-  | Sil.Store (lexp, _, rexp, location) ->
+      |> check_expr_for_integer_overflow integer_type_widths pname exp location mem
+  | Sil.Store {e1= lexp; e2= rexp; loc= location} ->
       cond_set
       |> check_expr_for_array_access integer_type_widths lexp location mem
-      |> check_expr_for_integer_overflow integer_type_widths lexp location mem
-      |> check_expr_for_integer_overflow integer_type_widths rexp location mem
+      |> check_expr_for_array_access ~sub_expr_only:true integer_type_widths rexp location mem
+      |> check_expr_for_integer_overflow integer_type_widths pname lexp location mem
+      |> check_expr_for_integer_overflow integer_type_widths pname rexp location mem
   | Sil.Call (_, Const (Cfun callee_pname), params, location, _) -> (
       let cond_set =
         List.fold params ~init:cond_set ~f:(fun cond_set (exp, _) ->
-            check_expr_for_integer_overflow integer_type_widths exp location mem cond_set )
+            check_expr_for_integer_overflow integer_type_widths pname exp location mem cond_set )
       in
-      match Models.Call.dispatch tenv callee_pname params with
+      let fun_arg_list =
+        List.map params ~f:(fun (exp, typ) ->
+            ProcnameDispatcher.Call.FuncArg.{exp; typ; arg_payload= ()} )
+      in
+      match Models.Call.dispatch tenv callee_pname fun_arg_list with
       | Some {Models.check} ->
           let model_env =
             let node_hash = CFG.Node.hash node in
-            let pname = Procdesc.get_proc_name pdesc in
             BoUtils.ModelEnv.mk_model_env pname ~node_hash location tenv integer_type_widths
+              get_summary
           in
           check model_env mem cond_set
       | None -> (
-        match get_proc_summary callee_pname with
-        | Some (callee_mem, callee_formals, callee_condset) ->
-            instantiate_cond tenv integer_type_widths callee_pname callee_formals params mem
-              callee_mem callee_condset location
-            |> PO.ConditionSet.join cond_set
-        | None ->
-            (* unknown call / no inferbo payload *) cond_set ) )
+          let {BoUtils.ReplaceCallee.pname= callee_pname; params; is_params_ref} =
+            BoUtils.ReplaceCallee.replace_make_shared tenv get_formals callee_pname params
+          in
+          match (get_checks_summary callee_pname, get_formals callee_pname) with
+          | Some callee_condset, Some callee_formals ->
+              instantiate_cond ~is_params_ref integer_type_widths callee_pname callee_formals params
+                mem callee_condset location
+              |> PO.ConditionSet.join cond_set
+          | _, _ ->
+              (* unknown call / no inferbo payload *) cond_set ) )
   | Sil.Prune (exp, location, _, _) ->
-      check_expr_for_integer_overflow integer_type_widths exp location mem cond_set
+      check_expr_for_integer_overflow integer_type_widths pname exp location mem cond_set
   | _ ->
       cond_set
 
@@ -330,8 +325,10 @@ let print_debug_info : Sil.instr -> Dom.Mem.t -> PO.ConditionSet.checked_t -> un
 
 
 let check_instrs :
-       get_proc_summary
-    -> Procdesc.t
+       get_checks_summary
+    -> BoSummary.get_summary
+    -> BoUtils.get_formals
+    -> Procname.t
     -> Tenv.t
     -> Typ.IntegerWidths.t
     -> CFG.t
@@ -340,33 +337,36 @@ let check_instrs :
     -> Dom.Mem.t AbstractInterpreter.State.t
     -> Checks.t
     -> Checks.t =
- fun get_proc_summary pdesc tenv integer_type_widths cfg node instrs state checks ->
+ fun get_checks_summary get_summary get_formals pname tenv integer_type_widths cfg node instrs state
+     checks ->
   match state with
   | _ when Instrs.is_empty instrs ->
       checks
-  | {AbstractInterpreter.State.pre= Bottom} ->
+  | {AbstractInterpreter.State.pre= Dom.Mem.(Unreachable | ExcRaised)} ->
       checks
-  | {AbstractInterpreter.State.pre= NonBottom _ as pre; post} ->
-      if Instrs.nth_exists instrs 1 then
-        L.(die InternalError) "Did not expect several instructions" ;
+  | {AbstractInterpreter.State.pre= Reachable _ as pre; post} ->
+      if Instrs.nth_exists instrs 1 then L.(die InternalError) "Did not expect several instructions" ;
       let instr = Instrs.nth_exn instrs 0 in
       let checks =
         match post with
-        | Bottom ->
+        | Dom.Mem.(Unreachable | ExcRaised) ->
             add_unreachable_code cfg node instr Instrs.empty checks
-        | NonBottom _ ->
+        | Dom.Mem.Reachable _ ->
             checks
       in
       let cond_set =
-        check_instr get_proc_summary pdesc tenv integer_type_widths node instr pre checks.cond_set
+        check_instr get_checks_summary get_summary get_formals pname tenv integer_type_widths node
+          instr pre checks.cond_set
       in
       print_debug_info instr pre cond_set ;
       {checks with cond_set}
 
 
 let check_node :
-       get_proc_summary
-    -> Procdesc.t
+       get_checks_summary
+    -> BoSummary.get_summary
+    -> BoUtils.get_formals
+    -> Procname.t
     -> Tenv.t
     -> Typ.IntegerWidths.t
     -> CFG.t
@@ -374,11 +374,13 @@ let check_node :
     -> Checks.t
     -> CFG.Node.t
     -> Checks.t =
- fun get_proc_summary pdesc tenv integer_type_widths cfg inv_map checks node ->
+ fun get_checks_summary get_summary get_formals pname tenv integer_type_widths cfg inv_map checks
+     node ->
   match BufferOverrunAnalysis.extract_state (CFG.Node.id node) inv_map with
   | Some state ->
       let instrs = CFG.instrs node in
-      check_instrs get_proc_summary pdesc tenv integer_type_widths cfg node instrs state checks
+      check_instrs get_checks_summary get_summary get_formals pname tenv integer_type_widths cfg
+        node instrs state checks
   | _ ->
       checks
 
@@ -386,23 +388,27 @@ let check_node :
 type checks = Checks.t
 
 let compute_checks :
-       get_proc_summary
-    -> Procdesc.t
+       get_checks_summary
+    -> BoSummary.get_summary
+    -> BoUtils.get_formals
+    -> Procname.t
     -> Tenv.t
     -> Typ.IntegerWidths.t
     -> CFG.t
     -> BufferOverrunAnalysis.invariant_map
     -> checks =
- fun get_proc_summary pdesc tenv integer_type_widths cfg inv_map ->
+ fun get_checks_summary get_summary get_formals pname tenv integer_type_widths cfg inv_map ->
   CFG.fold_nodes cfg
-    ~f:(check_node get_proc_summary pdesc tenv integer_type_widths cfg inv_map)
+    ~f:
+      (check_node get_checks_summary get_summary get_formals pname tenv integer_type_widths cfg
+         inv_map)
     ~init:Checks.empty
 
 
-let report_errors : Tenv.t -> checks -> Summary.t -> unit =
- fun tenv {cond_set; unused_branches; unreachable_statements} summary ->
-  UnusedBranches.report tenv summary unused_branches ;
-  UnreachableStatements.report summary unreachable_statements ;
+let report_errors ({InterproceduralAnalysis.proc_desc; err_log} as analysis_data)
+    {Checks.cond_set; unused_branches; unreachable_statements} =
+  UnusedBranches.report analysis_data unused_branches ;
+  UnreachableStatements.report analysis_data unreachable_statements ;
   let report cond trace issue_type =
     let location = PO.ConditionTrace.get_report_location trace in
     let description ~markup = PO.description ~markup cond trace in
@@ -411,48 +417,51 @@ let report_errors : Tenv.t -> checks -> Summary.t -> unit =
       Trace.Issue.make_err_trace ~description (PO.ConditionTrace.get_val_traces trace)
       |> Errlog.concat_traces
     in
-    Reporting.log_error summary ~loc:location ~ltr:trace issue_type (description ~markup:true)
+    Reporting.log_issue proc_desc err_log ~loc:location ~ltr:trace BufferOverrunChecker issue_type
+      (description ~markup:true)
   in
   PO.ConditionSet.report_errors ~report cond_set
 
 
-let get_checks_summary : BufferOverrunAnalysis.local_decls -> checks -> checks_summary =
- fun locals
-     Checks.
+let get_checks_summary : checks -> checks_summary =
+ fun Checks.
        { cond_set
        ; unused_branches= _ (* intra-procedural *)
        ; unreachable_statements= _ (* intra-procedural *) } ->
-  PO.ConditionSet.for_summary ~forget_locs:locals cond_set
+  PO.ConditionSet.for_summary cond_set
 
 
-let checker : Callbacks.proc_callback_args -> Summary.t =
- fun {proc_desc; tenv; integer_type_widths; summary} ->
+let checker ({InterproceduralAnalysis.proc_desc; tenv; exe_env; analyze_dependency} as analysis_data)
+    =
+  let proc_name = Procdesc.get_proc_name proc_desc in
+  let integer_type_widths = Exe_env.get_integer_type_widths exe_env proc_name in
   let inv_map =
-    BufferOverrunAnalysis.cached_compute_invariant_map proc_desc tenv integer_type_widths
+    BufferOverrunAnalysis.cached_compute_invariant_map
+      (InterproceduralAnalysis.bind_payload analysis_data ~f:snd)
   in
   let underlying_exit_node = Procdesc.get_exit_node proc_desc in
   let pp_name f = F.pp_print_string f "bufferoverrun check" in
-  NodePrinter.start_session ~pp_name underlying_exit_node ;
-  let summary =
-    let cfg = CFG.from_pdesc proc_desc in
-    let checks =
-      let get_proc_summary callee_pname =
-        Ondemand.analyze_proc_name ~caller_pdesc:proc_desc callee_pname
-        |> Option.bind ~f:(fun summary ->
-               let analysis_payload = BufferOverrunAnalysis.Payload.of_summary summary in
-               let checker_payload = Payload.of_summary summary in
-               Option.map2 analysis_payload checker_payload
-                 ~f:(fun analysis_payload checker_payload ->
-                   ( analysis_payload
-                   , Summary.get_proc_desc summary |> Procdesc.get_pvar_formals
-                   , checker_payload ) ) )
+  AnalysisCallbacks.html_debug_new_node_session ~pp_name underlying_exit_node ~f:(fun () ->
+      let cfg = CFG.from_pdesc proc_desc in
+      let checks =
+        let open IOption.Let_syntax in
+        let get_summary_common callee_pname =
+          let+ _, summaries = analyze_dependency callee_pname in
+          summaries
+        in
+        let get_checks_summary callee_pname =
+          let* checker_summary, _analysis_summary = get_summary_common callee_pname in
+          checker_summary
+        in
+        let get_summary callee_pname =
+          let* _checker_summary, analysis_summary = get_summary_common callee_pname in
+          analysis_summary
+        in
+        let get_formals callee_pname =
+          AnalysisCallbacks.get_proc_desc callee_pname >>| Procdesc.get_pvar_formals
+        in
+        compute_checks get_checks_summary get_summary get_formals proc_name tenv integer_type_widths
+          cfg inv_map
       in
-      compute_checks get_proc_summary proc_desc tenv integer_type_widths cfg inv_map
-    in
-    report_errors tenv checks summary ;
-    let locals = BufferOverrunAnalysis.get_local_decls proc_desc in
-    let cond_set = get_checks_summary locals checks in
-    Payload.update_summary cond_set summary
-  in
-  NodePrinter.finish_session underlying_exit_node ;
-  summary
+      report_errors analysis_data checks ;
+      Some (get_checks_summary checks) )

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Copyright (c) 2018-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -46,12 +46,12 @@
 #    Recompile Infer.
 
 
-SOURCE_FILES=$(grep "error:" infer-out/bugs.txt | cut -f1 -d: | sort -u | grep -v test )
+SOURCE_FILES=$(grep "error:" infer-out/report.txt | cut -f1 -d: | sort -u | grep -v test )
 MATCHERS=""
 
 cat <<EOF
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -83,7 +83,7 @@ for SOURCE_FILE in $SOURCE_FILES ; do
 
   FULLCLASSNAME="${PACKAGE}.${CLASS}"
   METHOD_REXP="^  Method \`.* $CLASS\."
-  METHODS=$(grep -E "$METHOD_REXP" infer-out/bugs.txt | cut -f2 -d. | cut -f1 -d\` | sort -u)
+  METHODS=$(grep -E "$METHOD_REXP" infer-out/report.txt | cut -f2 -d. | cut -f1 -d\` | sort -u)
 
   if [ -z "$METHODS" ] ; then
     continue

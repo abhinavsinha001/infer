@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -42,14 +42,16 @@ class HoistModeled {
     }
   }
 
-  void linear_substring_hoist(String s, ArrayList<Integer> list, Integer el) {
+  void linear_substring_hoist_FN(String s, ArrayList<Integer> list, Integer el) {
     String sub;
     int length = s.length();
     for (int i = 0; i < 10; i++) {
-      sub = s.substring(2, length - 1);
+      sub =
+          s.substring(
+              2, length - 1); // can't determine statically that 2 <= length-1. So we give unit cost
     }
     for (int i = 0; i < 10; i++) {
-      sub = s.substring(1);
+      sub = s.substring(1); // ditto
     }
   }
 
@@ -64,6 +66,15 @@ class HoistModeled {
     int length = s.length();
     for (int i = 0; i < 10; i++) {
       call_expensive_hoist("ez", list, el);
+    }
+  }
+
+  void constant_substring_dont_hoist(String s, int x) {
+    String sub;
+    int length = s.length();
+    int y = -1;
+    for (int i = 0; i < 10; i++) {
+      sub = s.substring(x, y);
     }
   }
 }

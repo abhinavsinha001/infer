@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -26,6 +26,12 @@ module type PrintableOrderedType = sig
   include Caml.Set.OrderedType
 
   include PrintableType with type t := t
+end
+
+module type PrintableEquatableOrderedType = sig
+  include Caml.Set.OrderedType
+
+  include PrintableEquatableType with type t := t
 end
 
 module type PPSet = sig
@@ -114,6 +120,10 @@ module type MonoMap = sig
   val mapi : (key -> value -> value) -> t -> t
 
   val is_singleton_or_more : t -> (key * value) IContainer.singleton_or_more
+
+  val fold_map : t -> init:'a -> f:('a -> value -> 'a * value) -> 'a * t
+
+  val of_seq : (key * value) Seq.t -> t
 end
 
 module type PPMap = sig
@@ -201,13 +211,19 @@ module MakePPMonoMap (Ord : PrintableOrderedType) (Val : PrintableType) =
 module type PrintableRankedType = sig
   include PrintableType
 
+  val compare : t -> t -> int
+
   val equal : t -> t -> bool
 
-  val to_rank : t -> int
+  type rank
+
+  val to_rank : t -> rank
 end
 
 module type PPUniqRankSet = sig
   type t
+
+  type rank
 
   type elt
 
@@ -217,11 +233,15 @@ module type PPUniqRankSet = sig
 
   val equal : t -> t -> bool
 
-  val find_rank : t -> int -> elt option
+  val find_rank : t -> rank -> elt option
 
   val fold : t -> init:'accum -> f:('accum -> elt -> 'accum) -> 'accum
 
+  val fold_map : t -> init:'accum -> f:('accum -> elt -> 'accum * elt) -> 'accum * t
+
   val is_empty : t -> bool
+
+  val is_singleton : t -> bool
 
   val is_subset : t -> of_:t -> bool
 
@@ -229,15 +249,24 @@ module type PPUniqRankSet = sig
 
   val singleton : elt -> t
 
+  val elements : t -> elt list
+
+  val remove : elt -> t -> t
+
   val union_prefer_left : t -> t -> t
 
-  val pp : F.formatter -> t -> unit
+  val pp : ?print_rank:bool -> F.formatter -> t -> unit
 end
 
-module MakePPUniqRankSet (Val : PrintableRankedType) : PPUniqRankSet with type elt = Val.t = struct
-  module Map = MakePPMonoMap (Int) (Val)
+module MakePPUniqRankSet
+    (Rank : PrintableEquatableOrderedType)
+    (Val : PrintableRankedType with type rank = Rank.t) :
+  PPUniqRankSet with type elt = Val.t and type rank = Rank.t = struct
+  module Map = MakePPMonoMap (Rank) (Val)
 
   type t = Map.t
+
+  type rank = Rank.t
 
   type elt = Val.t
 
@@ -253,6 +282,8 @@ module MakePPUniqRankSet (Val : PrintableRankedType) : PPUniqRankSet with type e
 
   let is_empty = Map.is_empty
 
+  let is_singleton m = Int.equal 1 (Map.cardinal m)
+
   let is_subset m ~of_ =
     Map.for_all
       (fun rank value ->
@@ -264,12 +295,29 @@ module MakePPUniqRankSet (Val : PrintableRankedType) : PPUniqRankSet with type e
     Map.mapi
       (fun rank value ->
         let value' = f value in
-        assert (Int.equal rank (Val.to_rank value')) ;
+        assert (Rank.equal rank (Val.to_rank value')) ;
         value' )
       m
 
 
-  let pp = Map.pp
+  let fold_map m ~init ~f =
+    let accum = ref init in
+    let m' =
+      map m ~f:(fun value ->
+          let acc', v' = f !accum value in
+          accum := acc' ;
+          v' )
+    in
+    (!accum, m')
+
+
+  let elements map = Map.bindings map |> List.map ~f:snd
+
+  let pp ?(print_rank = false) fmt map =
+    if print_rank then Map.pp fmt map else pp_collection ~pp_item:Val.pp fmt (elements map)
+
+
+  let remove value map = Map.remove (Val.to_rank value) map
 
   let singleton value = add Map.empty value
 

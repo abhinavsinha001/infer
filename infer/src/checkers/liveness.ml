@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -37,18 +37,18 @@ let string_list_of_json ~option_name ~init = function
 
 
 module type LivenessConfig = sig
-  val is_blacklisted_destructor : Typ.Procname.t -> bool
+  val is_blacklisted_destructor : Procname.t -> bool
 end
 
 (** Use this config to get a reliable liveness pre-analysis that tells you which variables are live
-   at which program point *)
+    at which program point *)
 module PreAnalysisMode : LivenessConfig = struct
   (** do not do any funky stuff *)
   let is_blacklisted_destructor _proc_name = false
 end
 
 (** Use this config to get a dead store checker that can take some liberties wrt a strict liveness
-   analysis *)
+    analysis *)
 module CheckerMode : LivenessConfig = struct
   let blacklisted_destructor_matcher =
     QualifiedCppName.Match.of_fuzzy_qual_names
@@ -77,9 +77,9 @@ module CheckerMode : LivenessConfig = struct
         false
 
 
-  let is_blacklisted_destructor (callee_pname : Typ.Procname.t) =
+  let is_blacklisted_destructor (callee_pname : Procname.t) =
     match callee_pname with
-    | ObjC_Cpp cpp_pname when Typ.Procname.ObjC_Cpp.is_destructor cpp_pname ->
+    | ObjC_Cpp cpp_pname when Procname.ObjC_Cpp.is_destructor cpp_pname ->
         is_blacklisted_class_name cpp_pname.class_name
         || is_wrapper_of_blacklisted_class_name cpp_pname.class_name
     | _ ->
@@ -92,7 +92,7 @@ module TransferFunctions (LConfig : LivenessConfig) (CFG : ProcCfg.S) = struct
   module CFG = CFG
   module Domain = Domain
 
-  type extras = ProcData.no_extras
+  type analysis_data = unit
 
   (** add all of the vars read in [exp] to the live set *)
   let exp_add_live exp astate =
@@ -111,8 +111,7 @@ module TransferFunctions (LConfig : LivenessConfig) (CFG : ProcCfg.S) = struct
     in
     let actuals = List.map actuals ~f:(fun (e, _) -> Exp.ignore_cast e) in
     match Exp.ignore_cast call_exp with
-    | Exp.Const (Cfun (Typ.Procname.ObjC_Cpp _ as pname)) when Typ.Procname.is_constructor pname
-      -> (
+    | Exp.Const (Cfun (Procname.ObjC_Cpp _ as pname)) when Procname.is_constructor pname -> (
       (* first actual passed to a C++ constructor is actually written, not read *)
       match actuals with
       | Exp.Lvar pvar :: exps ->
@@ -123,25 +122,25 @@ module TransferFunctions (LConfig : LivenessConfig) (CFG : ProcCfg.S) = struct
         add_live_actuals_ actuals live_acc
 
 
-  let exec_instr astate _ _ = function
-    | Sil.Load (lhs_id, _, _, _) when Ident.is_none lhs_id ->
+  let exec_instr astate () _ = function
+    | Sil.Load {id= lhs_id} when Ident.is_none lhs_id ->
         (* dummy deref inserted by frontend--don't count as a read *)
         astate
-    | Sil.Load (lhs_id, rhs_exp, _, _) ->
+    | Sil.Load {id= lhs_id; e= rhs_exp} ->
         Domain.remove (Var.of_id lhs_id) astate |> exp_add_live rhs_exp
-    | Sil.Store (Lvar lhs_pvar, _, rhs_exp, _) ->
+    | Sil.Store {e1= Lvar lhs_pvar; e2= rhs_exp} ->
         let astate' =
           if is_always_in_scope lhs_pvar then astate (* never kill globals *)
           else Domain.remove (Var.of_pvar lhs_pvar) astate
         in
         exp_add_live rhs_exp astate'
-    | Sil.Store (lhs_exp, _, rhs_exp, _) ->
+    | Sil.Store {e1= lhs_exp; e2= rhs_exp} ->
         exp_add_live lhs_exp astate |> exp_add_live rhs_exp
     | Sil.Prune (exp, _, _, _) ->
         exp_add_live exp astate
     | Sil.Call ((ret_id, _), Const (Cfun callee_pname), _, _, _)
       when LConfig.is_blacklisted_destructor callee_pname ->
-        Logging.d_printfln_escaped "Blacklisted destructor %a, ignoring reads@\n" Typ.Procname.pp
+        Logging.d_printfln_escaped "Blacklisted destructor %a, ignoring reads@\n" Procname.pp
           callee_pname ;
         Domain.remove (Var.of_id ret_id) astate
     | Sil.Call ((ret_id, _), call_exp, actuals, _, {CallFlags.cf_assign_last_arg}) ->
@@ -182,9 +181,9 @@ module CapturedByRefTransferFunctions (CFG : ProcCfg.S) = struct
   module CFG = CFG
   module Domain = VarSet
 
-  type extras = ProcData.no_extras
+  type analysis_data = unit
 
-  let exec_instr astate _ _ instr =
+  let exec_instr astate () _ instr =
     List.fold (Sil.exps_of_instr instr)
       ~f:(fun acc exp ->
         Exp.fold_captured exp
@@ -206,16 +205,15 @@ end
 module CapturedByRefAnalyzer =
   AbstractInterpreter.MakeRPO (CapturedByRefTransferFunctions (ProcCfg.Exceptional))
 
-let get_captured_by_ref_invariant_map proc_desc proc_data =
+let get_captured_by_ref_invariant_map proc_desc =
   let cfg = ProcCfg.Exceptional.from_pdesc proc_desc in
-  CapturedByRefAnalyzer.exec_cfg cfg proc_data ~initial:VarSet.empty
+  CapturedByRefAnalyzer.exec_cfg cfg () ~initial:VarSet.empty
 
 
-let checker {Callbacks.tenv; summary; proc_desc} : Summary.t =
-  let proc_data = ProcData.make_default proc_desc tenv in
-  let captured_by_ref_invariant_map = get_captured_by_ref_invariant_map proc_desc proc_data in
+let checker {IntraproceduralAnalysis.proc_desc; err_log} =
+  let captured_by_ref_invariant_map = get_captured_by_ref_invariant_map proc_desc in
   let cfg = CFG.from_pdesc proc_desc in
-  let invariant_map = CheckerAnalyzer.exec_cfg cfg proc_data ~initial:Domain.empty in
+  let invariant_map = CheckerAnalyzer.exec_cfg cfg () ~initial:Domain.empty in
   (* we don't want to report in harmless cases like int i = 0; if (...) { i = ... } else { i = ... }
      that create an intentional dead store as an attempt to imitate default value semantics.
      use dead stores to a "sentinel" value as a heuristic for ignoring this case *)
@@ -258,18 +256,17 @@ let checker {Callbacks.tenv; summary; proc_desc} : Summary.t =
         (Typ.pp_full Pp.text) typ
     in
     let ltr = [Errlog.make_trace_element 0 loc "Write of unused value" []] in
-    Reporting.log_error summary ~loc ~ltr IssueType.dead_store message
+    Reporting.log_issue proc_desc err_log ~loc ~ltr Liveness IssueType.dead_store message
   in
   let report_dead_store live_vars captured_by_ref_vars = function
-    | Sil.Store (Lvar pvar, typ, rhs_exp, loc)
-      when should_report pvar typ live_vars captured_by_ref_vars && not (is_sentinel_exp rhs_exp)
-      ->
+    | Sil.Store {e1= Lvar pvar; typ; e2= rhs_exp; loc}
+      when should_report pvar typ live_vars captured_by_ref_vars && not (is_sentinel_exp rhs_exp) ->
         log_report pvar typ loc
     | Sil.Call (_, e_fun, (arg, typ) :: _, loc, _) -> (
       match (Exp.ignore_cast e_fun, Exp.ignore_cast arg) with
-      | Exp.Const (Cfun (Typ.Procname.ObjC_Cpp _ as pname)), Exp.Lvar pvar
-        when Typ.Procname.is_constructor pname
-             && should_report pvar typ live_vars captured_by_ref_vars ->
+      | Exp.Const (Cfun (Procname.ObjC_Cpp _ as pname)), Exp.Lvar pvar
+        when Procname.is_constructor pname && should_report pvar typ live_vars captured_by_ref_vars
+        ->
           log_report pvar typ loc
       | _, _ ->
           () )
@@ -296,5 +293,4 @@ let checker {Callbacks.tenv; summary; proc_desc} : Summary.t =
         | None ->
             () )
   in
-  Container.iter cfg ~fold:CFG.fold_nodes ~f:report_on_node ;
-  summary
+  Container.iter cfg ~fold:CFG.fold_nodes ~f:report_on_node

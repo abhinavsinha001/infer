@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -10,8 +10,8 @@ open! IStd
 module L = Logging
 
 (** This function should be used before adding a new index to Earray. The [exp] is the newly created
-   index. This function "cleans" [exp] according to whether it is the footprint or current part of
-   the prop.  The function faults in the re - execution mode, as an internal check of the tool. *)
+    index. This function "cleans" [exp] according to whether it is the footprint or current part of
+    the prop. The function faults in the re - execution mode, as an internal check of the tool. *)
 let array_clean_new_index footprint_part new_idx =
   assert (not (footprint_part && not !BiabductionConfig.footprint)) ;
   if
@@ -29,7 +29,7 @@ let array_clean_new_index footprint_part new_idx =
 
 (** Abstraction for Arrays *)
 
-type sigma = Sil.hpred list
+type sigma = Predicates.hpred list
 
 (** Matcher for the sigma part specialized to strexps *)
 module StrexpMatch : sig
@@ -39,17 +39,17 @@ module StrexpMatch : sig
   val path_to_exps : path -> Exp.t list
   (** convert a path into a list of expressions *)
 
-  val path_from_exp_offsets : Exp.t -> Sil.offset list -> path
+  val path_from_exp_offsets : Exp.t -> Predicates.offset list -> path
   (** create a path from a root and a list of offsets *)
 
   (** path to the root, length, elements and type of a new_array *)
-  type strexp_data = path * Sil.strexp * Typ.t
+  type strexp_data = path * Predicates.strexp * Typ.t
 
   (** sigma with info about a current array *)
   type t
 
   val find_path : sigma -> path -> t
-  (** Find a strexp at the given path. Can raise [Not_found] *)
+  (** Find a strexp at the given path. Can raise [Not_found_s/Caml.Not_found] *)
 
   val find : Tenv.t -> sigma -> (strexp_data -> bool) -> t list
   (** Find a strexp with the given property. *)
@@ -57,14 +57,14 @@ module StrexpMatch : sig
   val get_data : Tenv.t -> t -> strexp_data
   (** Get the array *)
 
-  val replace_strexp : Tenv.t -> bool -> t -> Sil.strexp -> sigma
+  val replace_strexp : Tenv.t -> bool -> t -> Predicates.strexp -> sigma
   (** Replace the strexp at a given position by a new strexp *)
 
   val replace_index : Tenv.t -> bool -> t -> Exp.t -> Exp.t -> sigma
   (** Replace the index in the array at a given position with the new index *)
 end = struct
   (** syntactic offset *)
-  type syn_offset = Field of Typ.Fieldname.t * Typ.t | Index of Exp.t
+  type syn_offset = Field of Fieldname.t * Typ.t | Index of Exp.t
 
   (** path through an Estruct *)
   type path = Exp.t * syn_offset list
@@ -74,7 +74,7 @@ end = struct
     let fail () =
       L.d_strln "Failure of get_strexp_at_syn_offsets" ;
       L.d_str "se: " ;
-      Sil.d_sexp se ;
+      Predicates.d_sexp se ;
       L.d_ln () ;
       L.d_str "t: " ;
       Typ.d_full t ;
@@ -84,15 +84,15 @@ end = struct
     match (se, t.desc, syn_offs) with
     | _, _, [] ->
         (se, t)
-    | Sil.Estruct (fsel, _), Tstruct name, Field (fld, _) :: syn_offs' -> (
+    | Predicates.Estruct (fsel, _), Tstruct name, Field (fld, _) :: syn_offs' -> (
       match Tenv.lookup tenv name with
       | Some {fields} ->
-          let se' = snd (List.find_exn ~f:(fun (f', _) -> Typ.Fieldname.equal f' fld) fsel) in
-          let t' = snd3 (List.find_exn ~f:(fun (f', _, _) -> Typ.Fieldname.equal f' fld) fields) in
+          let se' = snd (List.find_exn ~f:(fun (f', _) -> Fieldname.equal f' fld) fsel) in
+          let t' = snd3 (List.find_exn ~f:(fun (f', _, _) -> Fieldname.equal f' fld) fields) in
           get_strexp_at_syn_offsets tenv se' t' syn_offs'
       | None ->
           fail () )
-    | Sil.Earray (_, esel, _), Typ.Tarray {elt= t'}, Index ind :: syn_offs' ->
+    | Predicates.Earray (_, esel, _), Typ.Tarray {elt= t'}, Index ind :: syn_offs' ->
         let se' = snd (List.find_exn ~f:(fun (i', _) -> Exp.equal i' ind) esel) in
         get_strexp_at_syn_offsets tenv se' t' syn_offs'
     | _ ->
@@ -104,31 +104,30 @@ end = struct
     match (se, t.desc, syn_offs) with
     | _, _, [] ->
         update se
-    | Sil.Estruct (fsel, inst), Tstruct name, Field (fld, _) :: syn_offs' -> (
+    | Predicates.Estruct (fsel, inst), Tstruct name, Field (fld, _) :: syn_offs' -> (
       match Tenv.lookup tenv name with
       | Some {fields} ->
-          let se' = snd (List.find_exn ~f:(fun (f', _) -> Typ.Fieldname.equal f' fld) fsel) in
+          let se' = snd (List.find_exn ~f:(fun (f', _) -> Fieldname.equal f' fld) fsel) in
           let t' =
             (fun (_, y, _) -> y)
-              (List.find_exn ~f:(fun (f', _, _) -> Typ.Fieldname.equal f' fld) fields)
+              (List.find_exn ~f:(fun (f', _, _) -> Fieldname.equal f' fld) fields)
           in
           let se_mod = replace_strexp_at_syn_offsets tenv se' t' syn_offs' update in
           let fsel' =
             List.map
-              ~f:(fun (f'', se'') ->
-                if Typ.Fieldname.equal f'' fld then (fld, se_mod) else (f'', se'') )
+              ~f:(fun (f'', se'') -> if Fieldname.equal f'' fld then (fld, se_mod) else (f'', se''))
               fsel
           in
-          Sil.Estruct (fsel', inst)
+          Predicates.Estruct (fsel', inst)
       | None ->
           assert false )
-    | Sil.Earray (len, esel, inst), Tarray {elt= t'}, Index idx :: syn_offs' ->
+    | Predicates.Earray (len, esel, inst), Tarray {elt= t'}, Index idx :: syn_offs' ->
         let se' = snd (List.find_exn ~f:(fun (i', _) -> Exp.equal i' idx) esel) in
         let se_mod = replace_strexp_at_syn_offsets tenv se' t' syn_offs' update in
         let esel' =
           List.map ~f:(fun ese -> if Exp.equal (fst ese) idx then (idx, se_mod) else ese) esel
         in
-        Sil.Earray (len, esel', inst)
+        Predicates.Earray (len, esel', inst)
     | _ ->
         assert false
 
@@ -151,9 +150,9 @@ end = struct
   (** create a path from a root and a list of offsets *)
   let path_from_exp_offsets root offs =
     let offset_to_syn_offset = function
-      | Sil.Off_fld (fld, typ) ->
+      | Predicates.Off_fld (fld, typ) ->
           Field (fld, typ)
-      | Sil.Off_index idx ->
+      | Predicates.Off_index idx ->
           Index idx
     in
     let syn_offs = List.map ~f:offset_to_syn_offset offs in
@@ -161,19 +160,19 @@ end = struct
 
 
   (** path to the root, len, elements and type of a new_array *)
-  type strexp_data = path * Sil.strexp * Typ.t
+  type strexp_data = path * Predicates.strexp * Typ.t
 
   (** Store hpred using physical equality, and offset list for an array *)
-  type t = sigma * Sil.hpred * syn_offset list
+  type t = sigma * Predicates.hpred * syn_offset list
 
-  (** Find an array at the given path. Can raise [Not_found] *)
+  (** Find an array at the given path. Can raise [Not_found_s/Caml.Not_found] *)
   let find_path sigma (root, syn_offs) : t =
-    let filter = function Sil.Hpointsto (e, _, _) -> Exp.equal root e | _ -> false in
+    let filter = function Predicates.Hpointsto (e, _, _) -> Exp.equal root e | _ -> false in
     let hpred = List.find_exn ~f:filter sigma in
     (sigma, hpred, syn_offs)
 
 
-  (** Find a sub strexp with the given property. Can raise [Not_found] *)
+  (** Find a sub strexp with the given property. Can raise [Not_found_s/Caml.Not_found] *)
   let find tenv (sigma : sigma) (pred : strexp_data -> bool) : t list =
     let found = ref [] in
     let rec find_offset_sexp sigma_other hpred root offs se (typ : Typ.t) =
@@ -182,13 +181,13 @@ end = struct
       if pred (path, se, typ) then found := (sigma, hpred, offs') :: !found
       else
         match (se, typ.desc) with
-        | Sil.Estruct (fsel, _), Tstruct name -> (
+        | Predicates.Estruct (fsel, _), Tstruct name -> (
           match Tenv.lookup tenv name with
           | Some {fields} ->
               find_offset_fsel sigma_other hpred root offs fsel fields typ
           | None ->
               () )
-        | Sil.Earray (_, esel, _), Tarray {elt} ->
+        | Predicates.Earray (_, esel, _), Tarray {elt} ->
             find_offset_esel sigma_other hpred root offs esel elt
         | _ ->
             ()
@@ -197,11 +196,11 @@ end = struct
       | [] ->
           ()
       | (f, se) :: fsel' ->
-          ( match List.find ~f:(fun (f', _, _) -> Typ.Fieldname.equal f' f) ftal with
+          ( match List.find ~f:(fun (f', _, _) -> Fieldname.equal f' f) ftal with
           | Some (_, t, _) ->
               find_offset_sexp sigma_other hpred root (Field (f, typ) :: offs) se t
           | None ->
-              L.d_printfln "Can't find field %a in StrexpMatch.find" Typ.Fieldname.pp f ) ;
+              L.d_printfln "Can't find field %a in StrexpMatch.find" Fieldname.pp f ) ;
           find_offset_fsel sigma_other hpred root offs fsel' ftal typ
     and find_offset_esel sigma_other hpred root offs esel t =
       match esel with
@@ -216,20 +215,21 @@ end = struct
           ()
       | hpred :: sigma_rest ->
           ( match hpred with
-          | Sil.Hpointsto (root, se, te) ->
+          | Predicates.Hpointsto (root, se, te) ->
               let sigma_other = sigma_seen @ sigma_rest in
               find_offset_sexp sigma_other hpred root [] se (Exp.texp_to_typ None te)
           | _ ->
               () ) ;
           iterate (hpred :: sigma_seen) sigma_rest
     in
-    iterate [] sigma ; !found
+    iterate [] sigma ;
+    !found
 
 
   (** Get the matched strexp *)
   let get_data tenv ((_, hpred, syn_offs) : t) =
     match hpred with
-    | Sil.Hpointsto (root, se, te) ->
+    | Predicates.Hpointsto (root, se, te) ->
         let t = Exp.texp_to_typ None te in
         let se', t' = get_strexp_at_syn_offsets tenv se t syn_offs in
         let path' = (root, syn_offs) in
@@ -248,22 +248,22 @@ end = struct
     let update se' =
       let se_in = update se' in
       match (se', se_in) with
-      | Sil.Earray (len, esel, _), Sil.Earray (_, esel_in, inst2) ->
+      | Predicates.Earray (len, esel, _), Predicates.Earray (_, esel_in, inst2) ->
           let orig_indices = List.map ~f:fst esel in
           let index_is_not_new idx = List.exists ~f:(Exp.equal idx) orig_indices in
           let process_index idx =
             if index_is_not_new idx then idx else array_clean_new_index footprint_part idx
           in
           let esel_in' = List.map ~f:(fun (idx, se) -> (process_index idx, se)) esel_in in
-          Sil.Earray (len, esel_in', inst2)
+          Predicates.Earray (len, esel_in', inst2)
       | _, _ ->
           se_in
     in
     match hpred with
-    | Sil.Hpointsto (root, se, te) ->
+    | Predicates.Hpointsto (root, se, te) ->
         let t = Exp.texp_to_typ None te in
         let se' = replace_strexp_at_syn_offsets tenv se t syn_offs update in
-        Sil.Hpointsto (root, se', te)
+        Predicates.Hpointsto (root, se', te)
     | _ ->
         assert false
 
@@ -280,13 +280,13 @@ end = struct
       (index' : Exp.t) =
     let update se' =
       match se' with
-      | Sil.Earray (len, esel, inst) ->
+      | Predicates.Earray (len, esel, inst) ->
           let esel' =
             List.map
               ~f:(fun (e', se') -> if Exp.equal e' index then (index', se') else (e', se'))
               esel
           in
-          Sil.Earray (len, esel', inst)
+          Predicates.Earray (len, esel', inst)
       | _ ->
           assert false
     in
@@ -294,8 +294,8 @@ end = struct
     replace_hpred (sigma, hpred, syn_offs) hpred'
 end
 
-(** This function renames expressions in [p]. The renaming is, roughly
-    speaking, to replace [path.i] by [path.i'] for all (i, i') in [map]. *)
+(** This function renames expressions in [p]. The renaming is, roughly speaking, to replace [path.i]
+    by [path.i'] for all (i, i') in [map]. *)
 let prop_replace_path_index tenv (p : Prop.exposed Prop.t) (path : StrexpMatch.path)
     (map : (Exp.t * Exp.t) list) : Prop.exposed Prop.t =
   let elist_path = StrexpMatch.path_to_exps path in
@@ -320,8 +320,8 @@ let prop_replace_path_index tenv (p : Prop.exposed Prop.t) (path : StrexpMatch.p
   Prop.prop_expmap expmap_fun p
 
 
-(** This function uses [update] and transforms the two sigma parts of [p],
-    the sigma of the current SH of [p] and that of the footprint of [p]. *)
+(** This function uses [update] and transforms the two sigma parts of [p], the sigma of the current
+    SH of [p] and that of the footprint of [p]. *)
 let prop_update_sigma_and_fp_sigma tenv (p : Prop.normal Prop.t)
     (update : bool -> sigma -> sigma * bool) : Prop.normal Prop.t * bool =
   let sigma', changed = update false p.Prop.sigma in
@@ -338,9 +338,9 @@ let prop_update_sigma_and_fp_sigma tenv (p : Prop.normal Prop.t)
 (** Remember whether array abstraction was performed (to be reset before calling Abs.abstract) *)
 let array_abstraction_performed = ref false
 
-(** This function abstracts strexps. The parameter [can_abstract] spots strexps
-    where the abstraction might be applicable, and the parameter [do_abstract] does
-    the abstraction to those spotted strexps. *)
+(** This function abstracts strexps. The parameter [can_abstract] spots strexps where the
+    abstraction might be applicable, and the parameter [do_abstract] does the abstraction to those
+    spotted strexps. *)
 let generic_strexp_abstract tenv (abstraction_name : string) (p_in : Prop.normal Prop.t)
     (can_abstract_ : StrexpMatch.strexp_data -> bool)
     (do_abstract :
@@ -407,7 +407,7 @@ let index_is_pointed_to tenv (p : Prop.normal Prop.t) (path : StrexpMatch.path) 
   in
   let pointers = List.concat_map ~f:add_index_to_paths indices in
   let filter = function
-    | Sil.Hpointsto (_, Sil.Eexp (e, _), _) ->
+    | Predicates.Hpointsto (_, Predicates.Eexp (e, _), _) ->
         List.exists ~f:(Exp.equal e) pointers
     | _ ->
         false
@@ -432,7 +432,7 @@ let blur_array_index tenv (p : Prop.normal Prop.t) (path : StrexpMatch.path) (in
           let sigma_fp' = StrexpMatch.replace_index tenv true matched_fp index fresh_index in
           Prop.set p ~sigma_fp:sigma_fp'
         else Prop.expose p
-      with Caml.Not_found -> Prop.expose p
+      with Not_found_s _ | Caml.Not_found -> Prop.expose p
     in
     let p3 =
       let matched = StrexpMatch.find_path p.Prop.sigma path in
@@ -446,7 +446,7 @@ let blur_array_index tenv (p : Prop.normal Prop.t) (path : StrexpMatch.path) (in
       prop_replace_path_index tenv p3 path map
     in
     Prop.normalize tenv p4
-  with Caml.Not_found -> p
+  with Not_found_s _ | Caml.Not_found -> p
 
 
 (** Given [p] containing an array at [root], blur [indices] in it *)
@@ -457,25 +457,25 @@ let blur_array_indices tenv (p : Prop.normal Prop.t) (root : StrexpMatch.path)
 
 
 (** Given [p] containing an array at [root], only keep [indices] in it *)
-let keep_only_indices tenv (p : Prop.normal Prop.t) (path : StrexpMatch.path)
-    (indices : Exp.t list) : Prop.normal Prop.t * bool =
+let keep_only_indices tenv (p : Prop.normal Prop.t) (path : StrexpMatch.path) (indices : Exp.t list)
+    : Prop.normal Prop.t * bool =
   let prune_sigma footprint_part sigma =
     try
       let matched = StrexpMatch.find_path sigma path in
       let _, se, _ = StrexpMatch.get_data tenv matched in
       match se with
-      | Sil.Earray (len, esel, inst) ->
+      | Predicates.Earray (len, esel, inst) ->
           let esel', esel_leftover' =
             List.partition_tf ~f:(fun (e, _) -> List.exists ~f:(Exp.equal e) indices) esel
           in
           if List.is_empty esel_leftover' then (sigma, false)
           else
-            let se' = Sil.Earray (len, esel', inst) in
+            let se' = Predicates.Earray (len, esel', inst) in
             let sigma' = StrexpMatch.replace_strexp tenv footprint_part matched se' in
             (sigma', true)
       | _ ->
           (sigma, false)
-    with Caml.Not_found -> (sigma, false)
+    with Not_found_s _ | Caml.Not_found -> (sigma, false)
   in
   prop_update_sigma_and_fp_sigma tenv p prune_sigma
 
@@ -483,7 +483,7 @@ let keep_only_indices tenv (p : Prop.normal Prop.t) (path : StrexpMatch.path)
 (** If the type is array, check whether we should do abstraction *)
 let array_typ_can_abstract {Typ.desc} =
   match desc with
-  | Tarray {elt= {desc= Tptr ({desc= Tfun _}, _)}} ->
+  | Tarray {elt= {desc= Tptr ({desc= Tfun}, _)}} ->
       false (* don't abstract arrays of pointers *)
   | _ ->
       true
@@ -493,7 +493,7 @@ let array_typ_can_abstract {Typ.desc} =
 let strexp_can_abstract ((_, se, typ) : StrexpMatch.strexp_data) : bool =
   let can_abstract_se =
     match se with
-    | Sil.Earray (_, esel, _) ->
+    | Predicates.Earray (_, esel, _) ->
         let len = List.length esel in
         len > 1
     | _ ->
@@ -509,20 +509,30 @@ let strexp_do_abstract tenv footprint_part p ((path, se_in, _) : StrexpMatch.str
   if Config.trace_absarray && not footprint_part then L.d_strln "strexp_do_abstract (nonfootprint)" ;
   let prune_and_blur d_keys keep blur path keep_keys blur_keys =
     let p2, changed2 =
-      if Config.trace_absarray then ( L.d_str "keep " ; d_keys keep_keys ; L.d_ln () ) ;
+      if Config.trace_absarray then (
+        L.d_str "keep " ;
+        d_keys keep_keys ;
+        L.d_ln () ) ;
       keep p path keep_keys
     in
     let p3, changed3 =
       if List.is_empty blur_keys then (p2, false)
       else (
-        if Config.trace_absarray then ( L.d_str "blur " ; d_keys blur_keys ; L.d_ln () ) ;
+        if Config.trace_absarray then (
+          L.d_str "blur " ;
+          d_keys blur_keys ;
+          L.d_ln () ) ;
         blur p2 path blur_keys )
     in
-    if Config.trace_absarray then ( L.d_strln "Returns" ; Prop.d_prop p3 ; L.d_ln () ; L.d_ln () ) ;
+    if Config.trace_absarray then (
+      L.d_strln "Returns" ;
+      Prop.d_prop p3 ;
+      L.d_ln () ;
+      L.d_ln () ) ;
     (p3, changed2 || changed3)
   in
   let prune_and_blur_indices =
-    prune_and_blur Sil.d_exp_list (keep_only_indices tenv) (blur_array_indices tenv)
+    prune_and_blur Exp.d_list (keep_only_indices tenv) (blur_array_indices tenv)
   in
   let partition_abstract should_keep abstract ksel default_keys =
     let keep_ksel, remove_ksel = List.partition_tf ~f:should_keep ksel in
@@ -543,13 +553,16 @@ let strexp_do_abstract tenv footprint_part p ((path, se_in, _) : StrexpMatch.str
     partition_abstract should_keep abstract esel default_indices
   in
   let do_footprint () =
-    match se_in with Sil.Earray (_, esel, _) -> do_array_footprint esel | _ -> assert false
+    match se_in with Predicates.Earray (_, esel, _) -> do_array_footprint esel | _ -> assert false
   in
   let filter_abstract d_keys should_keep abstract ksel default_keys =
     let keep_ksel = List.filter ~f:should_keep ksel in
     let keep_keys = List.map ~f:fst keep_ksel in
     let keep_keys' = if List.is_empty keep_keys then default_keys else keep_keys in
-    if Config.trace_absarray then ( L.d_str "keep " ; d_keys keep_keys' ; L.d_ln () ) ;
+    if Config.trace_absarray then (
+      L.d_str "keep " ;
+      d_keys keep_keys' ;
+      L.d_ln () ) ;
     abstract keep_keys' []
   in
   let do_array_reexecution esel =
@@ -565,10 +578,14 @@ let strexp_do_abstract tenv footprint_part p ((path, se_in, _) : StrexpMatch.str
           false
     in
     let abstract = prune_and_blur_indices path in
-    filter_abstract Sil.d_exp_list should_keep abstract esel []
+    filter_abstract Exp.d_list should_keep abstract esel []
   in
   let do_reexecution () =
-    match se_in with Sil.Earray (_, esel, _) -> do_array_reexecution esel | _ -> assert false
+    match se_in with
+    | Predicates.Earray (_, esel, _) ->
+        do_array_reexecution esel
+    | _ ->
+        assert false
   in
   if !BiabductionConfig.footprint then do_footprint () else do_reexecution ()
 
@@ -584,7 +601,8 @@ let report_error prop =
   assert false
 
 
-(** Check performed after the array abstraction to see whether it was successful. Raise assert false in case of failure *)
+(** Check performed after the array abstraction to see whether it was successful. Raise assert false
+    in case of failure *)
 let check_after_array_abstraction tenv prop =
   let lookup = Tenv.lookup tenv in
   let check_index root offs (ind, _) =
@@ -594,34 +612,35 @@ let check_after_array_abstraction tenv prop =
     else not (Exp.free_vars ind |> Sequence.exists ~f:Ident.is_primed)
   in
   let rec check_se root offs typ = function
-    | Sil.Eexp _ ->
+    | Predicates.Eexp _ ->
         ()
-    | Sil.Earray (_, esel, _) ->
+    | Predicates.Earray (_, esel, _) ->
         (* check that no more than 2 elements are in the array *)
-        let typ_elem = Typ.array_elem (Some (Typ.mk Tvoid)) typ in
+        let typ_elem = Typ.array_elem (Some Typ.void) typ in
         if List.length esel > 2 && array_typ_can_abstract typ then
           if List.for_all ~f:(check_index root offs) esel then () else report_error prop
         else
           List.iter
-            ~f:(fun (ind, se) -> check_se root (offs @ [Sil.Off_index ind]) typ_elem se)
+            ~f:(fun (ind, se) -> check_se root (offs @ [Predicates.Off_index ind]) typ_elem se)
             esel
-    | Sil.Estruct (fsel, _) ->
+    | Predicates.Estruct (fsel, _) ->
         List.iter
           ~f:(fun (f, se) ->
-            let typ_f = Typ.Struct.fld_typ ~lookup ~default:(Typ.mk Tvoid) f typ in
-            check_se root (offs @ [Sil.Off_fld (f, typ)]) typ_f se )
+            let typ_f = Struct.fld_typ ~lookup ~default:Typ.void f typ in
+            check_se root (offs @ [Predicates.Off_fld (f, typ)]) typ_f se )
           fsel
   in
   let check_hpred = function
-    | Sil.Hpointsto (root, se, texp) ->
-        let typ = Exp.texp_to_typ (Some (Typ.mk Tvoid)) texp in
+    | Predicates.Hpointsto (root, se, texp) ->
+        let typ = Exp.texp_to_typ (Some Typ.void) texp in
         check_se root [] typ se
-    | Sil.Hlseg _ | Sil.Hdllseg _ ->
+    | Predicates.Hlseg _ | Predicates.Hdllseg _ ->
         ()
   in
   let check_sigma sigma = List.iter ~f:check_hpred sigma in
   (* check_footprint_pure prop; *)
-  check_sigma prop.Prop.sigma ; check_sigma prop.Prop.sigma_fp
+  check_sigma prop.Prop.sigma ;
+  check_sigma prop.Prop.sigma_fp
 
 
 (** Apply array abstraction and check the result *)
@@ -638,7 +657,8 @@ let remove_redundant_elements tenv prop =
   let occurs_at_most_once : Ident.t -> bool =
     let fav_curr =
       let ( @@@ ) = Sequence.append in
-      Sil.subst_free_vars prop.Prop.sub @@@ Prop.pi_free_vars prop.Prop.pi
+      Predicates.subst_free_vars prop.Prop.sub
+      @@@ Prop.pi_free_vars prop.Prop.pi
       @@@ Prop.sigma_free_vars prop.Prop.sigma
     in
     let fav_foot =
@@ -654,36 +674,36 @@ let remove_redundant_elements tenv prop =
   let filter_redundant_e_se fp_part (e, se) =
     let remove () =
       L.d_strln "kill_redundant: removing " ;
-      Sil.d_exp e ;
+      Exp.d_exp e ;
       L.d_str " " ;
-      Sil.d_sexp se ;
+      Predicates.d_sexp se ;
       L.d_ln () ;
       array_abstraction_performed := true ;
       modified := true ;
       false
     in
     match (e, se) with
-    | Exp.Const (Const.Cint i), Sil.Eexp (Exp.Var id, _)
+    | Exp.Const (Const.Cint i), Predicates.Eexp (Exp.Var id, _)
       when ((not fp_part) || IntLit.iszero i)
            && (not (Ident.is_normal id))
            && occurs_at_most_once id ->
         remove () (* unknown value can be removed in re-execution mode or if the index is zero *)
-    | Exp.Var id, Sil.Eexp _ when (not (Ident.is_normal id)) && occurs_at_most_once id ->
+    | Exp.Var id, Predicates.Eexp _ when (not (Ident.is_normal id)) && occurs_at_most_once id ->
         remove () (* index unknown can be removed *)
     | _ ->
         true
   in
   let remove_redundant_se fp_part = function
-    | Sil.Earray (len, esel, inst) ->
+    | Predicates.Earray (len, esel, inst) ->
         let esel' = List.filter ~f:(filter_redundant_e_se fp_part) esel in
-        Sil.Earray (len, esel', inst)
+        Predicates.Earray (len, esel', inst)
     | se ->
         se
   in
   let remove_redundant_hpred fp_part = function
-    | Sil.Hpointsto (e, se, te) ->
+    | Predicates.Hpointsto (e, se, te) ->
         let se' = remove_redundant_se fp_part se in
-        Sil.Hpointsto (e, se', te)
+        Predicates.Hpointsto (e, se', te)
     | hpred ->
         hpred
   in

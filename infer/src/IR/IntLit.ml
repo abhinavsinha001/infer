@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -29,7 +29,7 @@ type t = {signedness: signedness; i: Z.t; pointerness: pointerness} [@@deriving 
 exception OversizedShift
 
 let area {signedness; i} =
-  match (Z.(i < zero), signedness) with
+  match (Z.(lt i zero), signedness) with
   | true, Signed ->
       (* negative signed *) 1
   | false, _ ->
@@ -43,7 +43,7 @@ let to_signed intlit =
   | {signedness= Signed} ->
       Some intlit
   | {signedness= Unsigned; i} ->
-      if Z.(i < zero) then None else Some {intlit with signedness= Signed}
+      if Z.(lt i zero) then None else Some {intlit with signedness= Signed}
 
 
 let compare_value intlit1 intlit2 =
@@ -147,6 +147,10 @@ let shift_right intlit1 {i= i2} =
       if i2 < 0 || i2 >= 64 then raise OversizedShift ;
       lift1 (fun i -> Z.shift_right i i2) intlit1
 
+
+let max i1 i2 = if geq i1 i2 then i1 else i2
+
+let min i1 i2 = if leq i1 i2 then i1 else i2
 
 let pp f intlit = if isnull intlit then F.pp_print_string f "null" else Z.pp_print f intlit.i
 

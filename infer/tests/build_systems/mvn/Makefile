@@ -1,4 +1,4 @@
-# Copyright (c) 2016-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -36,8 +36,7 @@ infer-out-simple_app/report.json: infer-out-app_with_infer_profile/report.json
 infer-out-app_with_infer_profile/report.json: infer-out-app_with_profiles/report.json
 
 issues-%.exp.test: infer-out-%/report.json
-	$(QUIET)$(INFER_BIN) report -q $(INFERPRINT_OPTIONS) $@ \
-	  -o $(<D) --from-json-report $<
+	$(QUIET)$(INFER_BIN) report -q $(INFERPRINT_OPTIONS) $@ -o $(<D)
 
 issues.exp.test: $(foreach mvndir,$(MVN_DIRS),issues-$(mvndir).exp.test)
 #	erase the contents of the file

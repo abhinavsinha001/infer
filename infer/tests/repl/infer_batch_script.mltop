@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -16,5 +16,5 @@ ignore (Ident.create_fresh Ident.knormal) ;
 let ident = Ident.create_fresh Ident.knormal in
 let e = Exp.Var ident in
 print_endline (Exp.to_string e) ;
-(* pass --flavors flag to change the value *)
-print_endline (string_of_bool Config.flavors)
+(* pass --debug to change the value *)
+print_endline (string_of_bool Config.debug_mode)

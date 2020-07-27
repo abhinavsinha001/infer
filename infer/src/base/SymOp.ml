@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -25,7 +25,8 @@ let exn_not_failure = function Analysis_failure_exe _ -> false | _ -> true
 let try_finally ~f ~finally =
   match f () with
   | r ->
-      finally () ; r
+      finally () ;
+      r
   | exception (Analysis_failure_exe _ as f_exn) ->
       IExn.reraise_after f_exn ~f:(fun () ->
           try finally () with _ -> (* swallow in favor of the original exception *) () )
@@ -51,8 +52,6 @@ let pp_failure_kind fmt = function
       F.fprintf fmt "CRASH (%s)" msg
 
 
-let failure_kind_to_string failure_kind = Format.asprintf "%a" pp_failure_kind failure_kind
-
 (** Count the number of symbolic operations *)
 
 (** Timeout in seconds for each function *)
@@ -74,9 +73,8 @@ type t =
   ; mutable last_wallclock: float option  (** last wallclock set by an alarm, if any *)
   ; mutable symop_count: int  (** Number of symop's *)
   ; symop_total: int ref
-        (** Counter for the total number of symop's.
-        The new state created when save_state is called shares this counter
-        if keep_symop_total is true. Otherwise, a new counter is created. *)
+        (** Counter for the total number of symop's. The new state created when save_state is called
+            shares this counter if keep_symop_total is true. Otherwise, a new counter is created. *)
   }
 
 let initial () : t = {alarm_active= false; last_wallclock= None; symop_count= 0; symop_total= ref 0}
@@ -87,8 +85,8 @@ let gs : t ref = ref (initial ())
 (** Restore the old state. *)
 let restore_state state = gs := state
 
-(** Return the old state, and revert the current state to the initial one.
-    If keep_symop_total is true, share the total counter. *)
+(** Return the old state, and revert the current state to the initial one. If keep_symop_total is
+    true, share the total counter. *)
 let save_state ~keep_symop_total =
   let old_state = !gs in
   let new_state =
@@ -114,8 +112,9 @@ let unset_wallclock_alarm () = !gs.last_wallclock <- None
 (** if the wallclock alarm has expired, raise a timeout exception *)
 let check_wallclock_alarm () =
   match (!gs.last_wallclock, !wallclock_timeout_handler) with
-  | Some alarm_time, Some handler when Unix.gettimeofday () >= alarm_time ->
-      unset_wallclock_alarm () ; handler ()
+  | Some alarm_time, Some handler when Float.(Unix.gettimeofday () >= alarm_time) ->
+      unset_wallclock_alarm () ;
+      handler ()
   | _ ->
       ()
 
@@ -124,7 +123,7 @@ let check_wallclock_alarm () =
 let get_remaining_wallclock_time () =
   match !gs.last_wallclock with
   | Some alarm_time ->
-      max 0.0 (alarm_time -. Unix.gettimeofday ())
+      Float.(max 0.0 (alarm_time -. Unix.gettimeofday ()))
   | None ->
       0.0
 

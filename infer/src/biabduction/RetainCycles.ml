@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -12,7 +12,7 @@ let desc_retain_cycle tenv (cycle : RetainCyclesType.t) =
   Logging.d_strln "Proposition with retain cycle:" ;
   let do_edge index_ edge =
     let index = index_ + 1 in
-    let node = State.get_node_exn () in
+    let node = AnalysisState.get_node_exn () in
     let from_exp_str edge_obj =
       let type_str =
         let typ_str = Typ.to_string edge_obj.rc_from.rc_node_typ in
@@ -45,7 +45,7 @@ let desc_retain_cycle tenv (cycle : RetainCyclesType.t) =
       match edge with
       | Object obj ->
           Format.sprintf "%s --> %s" (from_exp_str obj)
-            (MF.monospaced_to_string (Typ.Fieldname.to_string obj.rc_field.rc_field_name))
+            (MF.monospaced_to_string (Fieldname.to_string obj.rc_field.rc_field_name))
       | Block (_, var) ->
           Format.sprintf "a block that captures %s" (MF.monospaced_to_string (Pvar.to_string var))
     in
@@ -66,9 +66,10 @@ let edge_is_strong tenv obj_edge =
   in
   let has_weak_or_unretained_or_assign params =
     List.exists
-      ~f:(fun att ->
-        String.equal Config.unsafe_unret att
-        || String.equal Config.weak att || String.equal Config.assign att )
+      ~f:(fun Annot.{value} ->
+        Annot.has_matching_str_value value ~pred:(fun att ->
+            String.equal Config.unsafe_unret att
+            || String.equal Config.weak att || String.equal Config.assign att ) )
       params
   in
   let rc_field =
@@ -76,9 +77,7 @@ let edge_is_strong tenv obj_edge =
     | Tstruct name -> (
       match Tenv.lookup tenv name with
       | Some {fields} ->
-          List.find
-            ~f:(fun (fn, _, _) -> Typ.Fieldname.equal obj_edge.rc_field.rc_field_name fn)
-            fields
+          List.find ~f:(fun (fn, _, _) -> Fieldname.equal obj_edge.rc_field.rc_field_name fn) fields
       | None ->
           None )
     | _ ->
@@ -120,7 +119,7 @@ let get_cycle_blocks root_node exp =
   match exp with
   | Exp.Closure {name; captured_vars} ->
       List.find_map
-        ~f:(fun (e, var, typ) ->
+        ~f:(fun (e, var, typ, _) ->
           match typ.Typ.desc with
           | Typ.Tptr (_, Typ.Pk_objc_weak) | Typ.Tptr (_, Typ.Pk_objc_unsafe_unretained) ->
               None
@@ -136,7 +135,7 @@ let get_weak_alias_type prop e =
   let sigma = prop.Prop.sigma in
   let check_weak_alias hpred =
     match hpred with
-    | Sil.Hpointsto (_, Sil.Eexp (e', _), Sizeof {typ}) -> (
+    | Predicates.Hpointsto (_, Eexp (e', _), Sizeof {typ}) -> (
       match typ.Typ.desc with
       | (Typ.Tptr (_, Typ.Pk_objc_weak) | Typ.Tptr (_, Typ.Pk_objc_unsafe_unretained))
         when Exp.equal e' e ->
@@ -154,7 +153,8 @@ let get_cycles found_cycles root tenv prop =
   let sigma = prop.Prop.sigma in
   let get_points_to e =
     List.find
-      ~f:(fun hpred -> match hpred with Sil.Hpointsto (e', _, _) -> Exp.equal e' e | _ -> false)
+      ~f:(fun hpred ->
+        match hpred with Predicates.Hpointsto (e', _, _) -> Exp.equal e' e | _ -> false )
       sigma
   in
   (* Perform a dfs of a graph stopping when e_root is reached. Returns the set of cycles reached. *)
@@ -169,7 +169,7 @@ let get_cycles found_cycles root tenv prop =
     match fields with
     | [] ->
         found_cycles
-    | (field, Sil.Eexp (f_exp, f_inst)) :: el' ->
+    | (field, Predicates.Eexp (f_exp, f_inst)) :: el' ->
         let rc_field = {rc_field_name= field; rc_field_inst= f_inst} in
         let obj_edge = {rc_from= from_node; rc_field} in
         let edge = Object obj_edge in
@@ -191,7 +191,7 @@ let get_cycles found_cycles root tenv prop =
               match get_points_to f_exp with
               | None ->
                   found_cycles
-              | Some (Sil.Hpointsto (_, Sil.Estruct (new_fields, _), Exp.Sizeof {typ= te}))
+              | Some (Predicates.Hpointsto (_, Estruct (new_fields, _), Exp.Sizeof {typ= te}))
                 when edge_is_strong tenv obj_edge ->
                   let rc_to = {rc_node_exp= f_exp; rc_node_typ= te} in
                   dfs ~found_cycles ~root_node ~from_node:rc_to ~rev_path:(edge :: rev_path)
@@ -205,8 +205,8 @@ let get_cycles found_cycles root tenv prop =
         found_cycles
   in
   match root with
-  | Sil.Hpointsto (e_root, Sil.Estruct (fl, _), Exp.Sizeof {typ= te}) when Sil.is_objc_object root
-    ->
+  | Predicates.Hpointsto (e_root, Estruct (fl, _), Exp.Sizeof {typ= te})
+    when Predicates.is_objc_object root ->
       let se_root = {rc_node_exp= e_root; rc_node_typ= te} in
       (* start dfs with empty path and expr pointing to root *)
       dfs ~found_cycles ~root_node:se_root ~from_node:se_root ~rev_path:[] ~fields:fl ~visited:[]
@@ -226,15 +226,17 @@ let exn_retain_cycle tenv cycle =
   let retain_cycle = desc_retain_cycle tenv cycle in
   let cycle_dotty = Format.asprintf "%a" RetainCyclesType.pp_dotty cycle in
   if Config.debug_mode then (
-    let rc_dotty_dir = Filename.concat Config.results_dir Config.retain_cycle_dotty_dir in
+    let rc_dotty_dir = ResultsDir.get_path RetainCycles in
     Utils.create_dir rc_dotty_dir ;
     let rc_dotty_file = Filename.temp_file ~in_dir:rc_dotty_dir "rc" ".dot" in
     RetainCyclesType.write_dotty_to_file rc_dotty_file cycle ) ;
-  let desc = Localise.desc_retain_cycle retain_cycle (State.get_loc_exn ()) (Some cycle_dotty) in
+  let desc =
+    Localise.desc_retain_cycle retain_cycle (AnalysisState.get_loc_exn ()) (Some cycle_dotty)
+  in
   Exceptions.Retain_cycle (desc, __POS__)
 
 
-let report_cycle tenv summary prop =
+let report_cycle {InterproceduralAnalysis.proc_desc; tenv; err_log} prop =
   (* When there is a cycle in objc we ignore it only if it's empty or it has weak or
      unsafe_unretained fields.  Otherwise we report a retain cycle. *)
   let cycles = get_retain_cycles tenv prop in
@@ -243,7 +245,7 @@ let report_cycle tenv summary prop =
     RetainCyclesType.Set.iter
       (fun cycle ->
         let exn = exn_retain_cycle tenv cycle in
-        Reporting.log_error_using_state summary exn )
+        BiabductionReporting.log_issue_using_state proc_desc err_log exn )
       cycles ;
     (* we report the retain cycles above but need to raise an exception as well to stop the analysis *)
-    raise (Exceptions.Dummy_exception (Localise.verbatim_desc "retain cycle found")) )
+    raise (Exceptions.Analysis_stops (Localise.verbatim_desc "retain cycle found", Some __POS__)) )

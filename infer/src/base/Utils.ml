@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -10,9 +10,6 @@ open PolyVariantEqual
 module F = Format
 module Hashtbl = Caml.Hashtbl
 module L = Die
-
-(** initial process times *)
-let initial_times = Unix.times ()
 
 (** recursively traverse a path for files ending with a given extension *)
 let find_files ~path ~extension =
@@ -26,10 +23,29 @@ let find_files ~path ~extension =
           traverse_dir_aux files full_path
       | _ ->
           files
+      | exception Unix.Unix_error (ENOENT, _, _) ->
+          files
     in
     Sys.fold_dir ~init ~f:(aux dir_path) dir_path
   in
   traverse_dir_aux [] path
+
+
+let fold_folders ~init ~f ~path =
+  let rec traverse_dir_aux acc dir_path =
+    let aux base_path acc' rel_path =
+      let full_path = base_path ^/ rel_path in
+      match (Unix.stat full_path).Unix.st_kind with
+      | Unix.S_DIR ->
+          traverse_dir_aux (f acc' full_path) full_path
+      | _ ->
+          acc'
+      | exception Unix.Unix_error (ENOENT, _, _) ->
+          acc'
+    in
+    Sys.fold_dir ~init:acc ~f:(aux dir_path) dir_path
+  in
+  traverse_dir_aux init path
 
 
 (** read a source file and return a list of lines, or None in case of error *)
@@ -50,7 +66,8 @@ let read_file fname =
       cleanup () ;
       Ok (List.rev !res)
   | Sys_error error ->
-      cleanup () ; Error error
+      cleanup () ;
+      Error error
 
 
 (** type for files used for printing *)
@@ -191,10 +208,32 @@ let with_file_out file ~f =
   try_finally_swallow_timeout ~f ~finally
 
 
-let with_intermediate_temp_file_out file ~f =
-  let temp_filename, temp_oc =
-    Filename.open_temp_file ~in_dir:(Filename.dirname file) "infer" ""
+type file_lock =
+  { file: string
+  ; oc: Stdlib.out_channel
+  ; fd: Core.Unix.File_descr.t
+  ; lock: unit -> unit
+  ; unlock: unit -> unit }
+
+let create_file_lock () =
+  let file, oc = Core.Filename.open_temp_file "infer_lock" "" in
+  let fd = Core.Unix.openfile ~mode:[IStd.Unix.O_WRONLY] file in
+  let lock () = Core.Unix.lockf fd ~mode:IStd.Unix.F_LOCK ~len:IStd.Int64.zero in
+  let unlock () = Core.Unix.lockf fd ~mode:IStd.Unix.F_ULOCK ~len:IStd.Int64.zero in
+  {file; oc; fd; lock; unlock}
+
+
+let with_file_lock ~file_lock:{file; oc; fd} ~f =
+  let finally () =
+    Core.Unix.close fd ;
+    Out_channel.close oc ;
+    Core.Unix.remove file
   in
+  try_finally_swallow_timeout ~f ~finally
+
+
+let with_intermediate_temp_file_out file ~f =
+  let temp_filename, temp_oc = Filename.open_temp_file ~in_dir:(Filename.dirname file) "infer" "" in
   let f () = f temp_oc in
   let finally () =
     Out_channel.close temp_oc ;
@@ -222,45 +261,35 @@ let echo_in chan_in = with_channel_in ~f:print_endline chan_in
 let with_process_in command read =
   let chan = Unix.open_process_in command in
   let f () = read chan in
-  let finally () = consume_in chan ; Unix.close_process_in chan in
+  let finally () =
+    consume_in chan ;
+    Unix.close_process_in chan
+  in
   do_finally_swallow_timeout ~f ~finally
 
 
-let with_process_lines ~(debug : ('a, F.formatter, unit) format -> 'a) ~cmd ~tmp_prefix ~f =
-  let shell_cmd = List.map ~f:Escape.escape_shell cmd |> String.concat ~sep:" " in
-  let verbose_err_file = Filename.temp_file tmp_prefix ".err" in
-  let shell_cmd_redirected = Printf.sprintf "%s 2>'%s'" shell_cmd verbose_err_file in
-  debug "Trying to execute: %s@\n%!" shell_cmd_redirected ;
-  let input_lines chan = In_channel.input_lines ~fix_win_eol:true chan in
-  let res = with_process_in shell_cmd_redirected input_lines in
-  let verbose_errlog = with_file_in verbose_err_file ~f:In_channel.input_all in
-  if not (String.equal verbose_errlog "") then
-    debug "@\nlog:@\n<<<<<<@\n%s@\n>>>>>>@\n%!" verbose_errlog ;
-  match res with
-  | lines, Ok () ->
-      f lines
-  | lines, (Error _ as err) ->
-      let output = String.concat ~sep:"\n" lines in
-      L.(die ExternalError)
-        "*** Failed to execute: %s@\n*** Command: %s@\n*** Output:@\n%s@."
-        (Unix.Exit_or_signal.to_string_hum err)
-        shell_cmd output
+let is_dir_kind (kind : Unix.file_kind) = match kind with S_DIR -> true | _ -> false
 
-
-(** Create a directory if it does not exist already. *)
+(** Recursively create a directory if it does not exist already. *)
 let create_dir dir =
   try
-    if (Unix.stat dir).Unix.st_kind <> Unix.S_DIR then
+    if not (is_dir_kind (Unix.stat dir).Unix.st_kind) then
       L.(die ExternalError) "file '%s' already exists and is not a directory" dir
   with Unix.Unix_error _ -> (
-    try Unix.mkdir dir ~perm:0o700
+    try Unix.mkdir_p dir ~perm:0o700
     with Unix.Unix_error _ ->
       let created_concurrently =
         (* check if another process created it meanwhile *)
-        try Polymorphic_compare.( = ) (Unix.stat dir).Unix.st_kind Unix.S_DIR
-        with Unix.Unix_error _ -> false
+        try Poly.equal (Unix.stat dir).Unix.st_kind Unix.S_DIR with Unix.Unix_error _ -> false
       in
       if not created_concurrently then L.(die ExternalError) "cannot create directory '%s'" dir )
+
+
+let out_channel_create_with_dir fname =
+  try Out_channel.create fname
+  with Sys_error _ ->
+    Unix.mkdir_p ~perm:0o700 (Filename.dirname fname) ;
+    Out_channel.create fname
 
 
 let realpath_cache = Hashtbl.create 1023
@@ -289,23 +318,15 @@ let realpath ?(warn_on_error = true) path =
 let devnull = lazy (Unix.openfile "/dev/null" ~mode:[Unix.O_WRONLY])
 
 let suppress_stderr2 f2 x1 x2 =
-  let restore_stderr src = Unix.dup2 ~src ~dst:Unix.stderr ; Unix.close src in
+  let restore_stderr src =
+    Unix.dup2 ~src ~dst:Unix.stderr () ;
+    Unix.close src
+  in
   let orig_stderr = Unix.dup Unix.stderr in
-  Unix.dup2 ~src:(Lazy.force devnull) ~dst:Unix.stderr ;
+  Unix.dup2 ~src:(Lazy.force devnull) ~dst:Unix.stderr () ;
   let f () = f2 x1 x2 in
   let finally () = restore_stderr orig_stderr in
   protect ~f ~finally
-
-
-let compare_versions v1 v2 =
-  let int_list_of_version v =
-    let lv = match String.split ~on:'.' v with [v] -> [v; "0"] | v -> v in
-    let int_of_string_or_zero v = try int_of_string v with Failure _ -> 0 in
-    List.map ~f:int_of_string_or_zero lv
-  in
-  let lv1 = int_list_of_version v1 in
-  let lv2 = int_list_of_version v2 in
-  [%compare: int list] lv1 lv2
 
 
 let rec rmtree name =
@@ -322,7 +343,8 @@ let rec rmtree name =
             then rmtree (name ^/ entry) ;
             rmdir dir
         | None ->
-            Unix.closedir dir ; Unix.rmdir name
+            Unix.closedir dir ;
+            Unix.rmdir name
       in
       rmdir dir
   | _ ->
@@ -339,8 +361,8 @@ let unlink_file_on_exit temp_file =
 
 
 (** drop at most one layer of well-balanced first and last characters satisfying [drop] from the
-   string; for instance, [strip_balanced ~drop:(function | 'a' | 'x' -> true | _ -> false) "xaabax"]
-   returns "aaba" *)
+    string; for instance,
+    [strip_balanced ~drop:(function | 'a' | 'x' -> true | _ -> false) "xaabax"] returns "aaba" *)
 let strip_balanced_once ~drop s =
   let n = String.length s in
   if n < 2 then s
@@ -392,3 +414,97 @@ let yojson_lookup yojson_assoc elt_name ~src ~f ~default =
   Option.value_map ~default
     ~f:(fun res -> f res ~src)
     (List.Assoc.find ~equal:String.equal yojson_assoc elt_name)
+
+
+let timeit ~f =
+  let start_time = Mtime_clock.counter () in
+  let ret_val = f () in
+  let duration_ms = Mtime_clock.count start_time |> Mtime.Span.to_ms |> int_of_float in
+  (ret_val, duration_ms)
+
+
+let do_in_dir ~dir ~f =
+  let cwd = Unix.getcwd () in
+  Unix.chdir dir ;
+  try_finally_swallow_timeout ~f ~finally:(fun () -> Unix.chdir cwd)
+
+
+let get_available_memory_MB () =
+  let proc_meminfo = "/proc/meminfo" in
+  let rec scan_for_expected_output in_channel =
+    match In_channel.input_line in_channel with
+    | None ->
+        None
+    | Some line -> (
+      try Scanf.sscanf line "MemAvailable: %u kB" (fun mem_kB -> Some (mem_kB / 1024))
+      with Scanf.Scan_failure _ -> scan_for_expected_output in_channel )
+  in
+  if Sys.file_exists proc_meminfo <> `Yes then None
+  else with_file_in proc_meminfo ~f:scan_for_expected_output
+
+
+let iter_infer_deps ~project_root ~f infer_deps_file =
+  let buck_root = project_root ^/ "buck-out" in
+  let one_line line =
+    match String.split ~on:'\t' line with
+    | [_; _; target_results_dir] ->
+        let infer_out_src =
+          if Filename.is_relative target_results_dir then
+            Filename.dirname (buck_root ^/ target_results_dir)
+          else target_results_dir
+        in
+        f infer_out_src
+    | _ ->
+        Die.die InternalError "Couldn't parse deps file '%s', line: %s" infer_deps_file line
+  in
+  match read_file infer_deps_file with
+  | Ok lines ->
+      List.iter ~f:one_line lines
+  | Error error ->
+      Die.die InternalError "Couldn't read deps file '%s': %s" infer_deps_file error
+
+
+let physical_cores () =
+  with_file_in "/proc/cpuinfo" ~f:(fun ic ->
+      let physical_or_core_regxp =
+        Re.Str.regexp "\\(physical id\\|core id\\)[^0-9]+\\([0-9]+\\).*"
+      in
+      let rec loop max_socket_id max_core_id =
+        match In_channel.input_line ~fix_win_eol:true ic with
+        | None ->
+            (max_socket_id + 1, max_core_id + 1)
+        | Some line when Re.Str.string_match physical_or_core_regxp line 0 -> (
+            let value = Re.Str.matched_group 2 line |> int_of_string in
+            match Re.Str.matched_group 1 line with
+            | "physical id" ->
+                loop (max value max_socket_id) max_core_id
+            | "core id" ->
+                loop max_socket_id (max value max_core_id)
+            | _ ->
+                L.die InternalError "Couldn't parse line '%s' from /proc/cpuinfo." line )
+        | Some _ ->
+            loop max_socket_id max_core_id
+      in
+      let sockets, cores_per_socket = loop 0 0 in
+      sockets * cores_per_socket )
+
+
+let cpus = Setcore.numcores ()
+
+let numcores =
+  match Version.build_platform with Darwin | Windows -> cpus / 2 | Linux -> physical_cores ()
+
+
+let set_best_cpu_for worker_id =
+  let threads_per_core = cpus / numcores in
+  let chosen_core = worker_id * threads_per_core % numcores in
+  let chosen_thread_in_core = worker_id * threads_per_core / numcores in
+  Setcore.setcore ((chosen_core * threads_per_core) + chosen_thread_in_core)
+
+
+let zip_fold_filenames ~init ~f ~zip_filename =
+  let file_in = Zip.open_in zip_filename in
+  let collect acc (entry : Zip.entry) = f acc entry.filename in
+  let result = List.fold ~f:collect ~init (Zip.entries file_in) in
+  Zip.close_in file_in ;
+  result

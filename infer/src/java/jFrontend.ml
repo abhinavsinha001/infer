@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -57,7 +57,8 @@ let add_edges (context : JContext.t) start_node exn_node exit_nodes method_body_
     else JTransExn.create_exception_handlers context [exn_node] get_body_nodes impl
   in
   let connect node pc =
-    Procdesc.node_set_succs_exn context.procdesc node (get_succ_nodes node pc) (get_exn_nodes pc)
+    Procdesc.node_set_succs context.procdesc node ~normal:(get_succ_nodes node pc)
+      ~exn:(get_exn_nodes pc)
   in
   let connect_nodes pc translated_instruction =
     match translated_instruction with
@@ -66,9 +67,10 @@ let add_edges (context : JContext.t) start_node exn_node exit_nodes method_body_
     | JTrans.Instr node ->
         connect node pc
     | JTrans.Prune (node_true, node_false) ->
-        connect node_true pc ; connect node_false pc
+        connect node_true pc ;
+        connect node_false pc
     | JTrans.Loop (join_node, node_true, node_false) ->
-        Procdesc.node_set_succs_exn context.procdesc join_node [node_true; node_false] [] ;
+        Procdesc.node_set_succs context.procdesc join_node ~normal:[node_true; node_false] ~exn:[] ;
         connect node_true pc ;
         connect node_false pc
   in
@@ -77,20 +79,20 @@ let add_edges (context : JContext.t) start_node exn_node exit_nodes method_body_
     direct_successors (-1) Int.Set.empty
   in
   (* the exceptions edges here are going directly to the exit node *)
-  Procdesc.node_set_succs_exn context.procdesc start_node first_nodes exit_nodes ;
+  Procdesc.node_set_succs context.procdesc start_node ~normal:first_nodes ~exn:exit_nodes ;
   if not super_call then
     (* the exceptions node is just before the exit node *)
-    Procdesc.node_set_succs_exn context.procdesc exn_node exit_nodes exit_nodes ;
+    Procdesc.node_set_succs context.procdesc exn_node ~normal:exit_nodes ~exn:exit_nodes ;
   Array.iteri ~f:connect_nodes method_body_nodes
 
 
 (** Add a concrete method. *)
-let add_cmethod source_file program linereader icfg cm proc_name =
+let add_cmethod source_file program icfg cm proc_name =
   let cn, _ = JBasics.cms_split cm.Javalib.cm_class_method_signature in
   if Inferconfig.skip_implementation_matcher source_file proc_name then
-    ignore (JTrans.create_empty_procdesc source_file program linereader icfg cm proc_name)
+    ignore (JTrans.create_empty_procdesc source_file program icfg cm proc_name)
   else
-    match JTrans.create_cm_procdesc source_file program linereader icfg cm proc_name with
+    match JTrans.create_cm_procdesc source_file program icfg cm proc_name with
     | None ->
         ()
     | Some (procdesc, start_node, exit_node, exn_node, jbir_code) ->
@@ -100,7 +102,7 @@ let add_cmethod source_file program linereader icfg cm proc_name =
 
 
 let path_of_cached_classname cn =
-  let root_path = Config.(results_dir ^/ classnames_dir_name) in
+  let root_path = ResultsDir.get_path JavaClassnamesCache in
   let package_path = List.fold ~f:Filename.concat ~init:root_path (JBasics.cn_package cn) in
   Filename.concat package_path (JBasics.cn_simple_name cn ^ ".java")
 
@@ -131,20 +133,37 @@ let cache_classname cn =
 
 let is_classname_cached cn = Sys.file_exists (path_of_cached_classname cn) = `Yes
 
+let test_source_file_location source_file program cn node =
+  let is_synthetic = function
+    | Javalib.JInterface _ ->
+        false
+    | Javalib.JClass jc ->
+        jc.Javalib.c_synthetic
+  in
+  if not (is_synthetic node) then
+    match JProgramDesc.get_java_location program cn with
+    | None ->
+        L.(debug Capture Verbose)
+          "WARNING SOURCE FILE PARSER: location not found for class %s in source file %s \n"
+          (JBasics.cn_name cn)
+          (SourceFile.to_abs_path source_file)
+    | Some _ ->
+        ()
+
+
 (* Given a source file and a class, translates the code of this class.
    In init - mode, finds out whether this class contains initializers at all,
    in this case translates it. In standard mode, all methods are translated *)
-let create_icfg source_file linereader program tenv icfg cn node =
+let create_icfg source_file program tenv icfg cn node =
   L.(debug Capture Verbose) "\tclassname: %s@." (JBasics.cn_name cn) ;
   if Config.dependency_mode && not (is_classname_cached cn) then cache_classname cn ;
+  test_source_file_location source_file program cn node ;
   let translate m =
     let proc_name = JTransType.translate_method_name program tenv m in
-    JClasspath.set_callee_translated program proc_name ;
-    if JClasspath.is_model proc_name then
+    JProgramDesc.set_callee_translated program proc_name ;
+    if BiabductionModels.mem proc_name then
       (* do not translate the method if there is a model for it *)
-      L.(debug Capture Verbose)
-        "Skipping method with a model: %s@."
-        (Typ.Procname.to_string proc_name)
+      L.debug Capture Verbose "Skipping method with a model: %a@." Procname.pp proc_name
     else
       try
         (* each procedure has different scope: start names from id 0 *)
@@ -155,16 +174,17 @@ let create_icfg source_file linereader program tenv icfg cn node =
         | Javalib.ConcreteMethod cm when JTrans.is_java_native cm ->
             ignore (JTrans.create_native_procdesc source_file program icfg cm proc_name)
         | Javalib.ConcreteMethod cm ->
-            add_cmethod source_file program linereader icfg cm proc_name
+            add_cmethod source_file program icfg cm proc_name
       with JBasics.Class_structure_error error ->
         L.internal_error "create_icfg raised JBasics.Class_structure_error %s on %a@." error
-          Typ.Procname.pp proc_name
+          Procname.pp proc_name
   in
   Javalib.m_iter translate node
 
 
-(* returns true for the set of classes that are selected to be translated *)
-let should_capture classes package_opt source_basename node =
+(* returns true for the set of classes that are selected to be translated in the given
+   program *)
+let should_capture program package_opt source_basename node =
   let classname = Javalib.get_name node in
   let match_package pkg cn =
     match JTransType.package_to_string (JBasics.cn_package cn) with
@@ -173,7 +193,7 @@ let should_capture classes package_opt source_basename node =
     | Some found_pkg ->
         String.equal found_pkg pkg
   in
-  if JBasics.ClassSet.mem classname classes then
+  if JProgramDesc.mem_classmap classname program then
     match Javalib.get_sourcefile node with
     | None ->
         false
@@ -187,25 +207,27 @@ let should_capture classes package_opt source_basename node =
 
 
 (* Computes the control - flow graph and call - graph of a given source file.
-   In the standard - mode, it translated all the classes that correspond to this
+   In the standard - mode, it translated all the classes of [program] that correspond to this
    source file. *)
-let compute_source_icfg linereader classes program tenv source_basename package_opt source_file =
+let compute_source_icfg program tenv source_basename package_opt source_file =
   let icfg = {JContext.cfg= Cfg.create (); tenv} in
   let select test procedure cn node =
     if test node then try procedure cn node with Bir.Subroutine -> ()
   in
+  (* we must set the java location for all classes in the source file before translation *)
+  JSourceFileInfo.collect_class_location program source_file ;
   let () =
     JBasics.ClassMap.iter
       (select
-         (should_capture classes package_opt source_basename)
-         (create_icfg source_file linereader program tenv icfg))
-      (JClasspath.get_classmap program)
+         (should_capture program package_opt source_basename)
+         (create_icfg source_file program tenv icfg))
+      (JProgramDesc.get_classmap program)
   in
   icfg.JContext.cfg
 
 
-let compute_class_icfg source_file linereader program tenv node =
+let compute_class_icfg source_file program tenv node =
   let icfg = {JContext.cfg= Cfg.create (); tenv} in
-  ( try create_icfg source_file linereader program tenv icfg (Javalib.get_name node) node
+  ( try create_icfg source_file program tenv icfg (Javalib.get_name node) node
     with Bir.Subroutine -> () ) ;
   icfg.JContext.cfg

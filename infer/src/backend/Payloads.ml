@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,73 +9,54 @@ open! IStd
 module F = Format
 
 type t =
-  { annot_map: AnnotReachabilityDomain.t option
+  { annot_map: AnnotationReachabilityDomain.t option
   ; biabduction: BiabductionSummary.t option
   ; buffer_overrun_analysis: BufferOverrunAnalysisSummary.t option
   ; buffer_overrun_checker: BufferOverrunCheckerSummary.t option
-  ; class_loads: ClassLoadsDomain.summary option
+  ; config_checks_between_markers: ConfigChecksBetweenMarkers.Summary.t option
   ; cost: CostDomain.summary option
   ; lab_resource_leaks: ResourceLeakDomain.summary option
-  ; litho: LithoDomain.t option
+  ; litho_required_props: LithoDomain.summary option
   ; pulse: PulseSummary.t option
   ; purity: PurityDomain.summary option
   ; quandary: QuandarySummary.t option
   ; racerd: RacerDDomain.summary option
   ; siof: SiofDomain.Summary.t option
   ; starvation: StarvationDomain.summary option
-  ; typestate: TypeState.t option
+  ; nullsafe: NullsafeSummary.t option
   ; uninit: UninitDomain.Summary.t option }
+[@@deriving fields]
 
-let pp pe fmt
-    { annot_map
-    ; biabduction
-    ; buffer_overrun_analysis
-    ; buffer_overrun_checker
-    ; class_loads
-    ; cost
-    ; lab_resource_leaks
-    ; litho
-    ; pulse
-    ; purity
-    ; quandary
-    ; racerd
-    ; siof
-    ; starvation
-    ; typestate
-    ; uninit } =
-  let pp_opt prefix pp fmt = function
-    | Some x ->
-        F.fprintf fmt "%s: %a@\n" prefix pp x
-    | None ->
-        ()
-  in
-  F.fprintf fmt "%a%a%a%a%a%a%a%a%a%a%a%a%a%a%a%a@\n"
-    (pp_opt "AnnotationReachability" AnnotReachabilityDomain.pp)
-    annot_map
-    (pp_opt "Biabduction" (BiabductionSummary.pp pe))
-    biabduction
-    (pp_opt "BufferOverrunAnalysis" BufferOverrunAnalysisSummary.pp)
-    buffer_overrun_analysis
-    (pp_opt "BufferOverrunChecker" BufferOverrunCheckerSummary.pp)
-    buffer_overrun_checker
-    (pp_opt "ClassLoads" ClassLoadsDomain.pp_summary)
-    class_loads
-    (pp_opt "Cost" CostDomain.pp_summary)
-    cost (pp_opt "Litho" LithoDomain.pp) litho (pp_opt "Pulse" PulseSummary.pp) pulse
-    (pp_opt "Purity" PurityDomain.pp_summary)
-    purity
-    (pp_opt "Quandary" QuandarySummary.pp)
-    quandary
-    (pp_opt "RacerD" RacerDDomain.pp_summary)
-    racerd
-    (pp_opt "Resource Leaks Lab" ResourceLeakDomain.pp)
-    lab_resource_leaks
-    (pp_opt "Siof" SiofDomain.Summary.pp)
-    siof
-    (pp_opt "Starvation" StarvationDomain.pp_summary)
-    starvation (pp_opt "TypeState" TypeState.pp) typestate
-    (pp_opt "Uninitialised" UninitDomain.Summary.pp)
-    uninit
+type 'a pp = Pp.env -> F.formatter -> 'a -> unit
+
+type field = F : {field: (t, 'a option) Field.t; name: string; pp: 'a pp} -> field
+
+let fields =
+  let mk field name pp = F {field; name; pp= (fun _ -> pp)} in
+  let mk_pe field name pp = F {field; name; pp} in
+  Fields.to_list
+    ~annot_map:(fun f -> mk f "AnnotationReachability" AnnotationReachabilityDomain.pp)
+    ~biabduction:(fun f -> mk_pe f "Biabduction" BiabductionSummary.pp)
+    ~buffer_overrun_analysis:(fun f -> mk f "BufferOverrunAnalysis" BufferOverrunAnalysisSummary.pp)
+    ~buffer_overrun_checker:(fun f -> mk f "BufferOverrunChecker" BufferOverrunCheckerSummary.pp)
+    ~config_checks_between_markers:(fun f ->
+      mk f "ConfigChecksBetweenMarkers" ConfigChecksBetweenMarkers.Summary.pp )
+    ~cost:(fun f -> mk f "Cost" CostDomain.pp_summary)
+    ~litho_required_props:(fun f -> mk f "Litho Required Props" LithoDomain.pp_summary)
+    ~pulse:(fun f -> mk f "Pulse" PulseSummary.pp)
+    ~purity:(fun f -> mk f "Purity" PurityDomain.pp_summary)
+    ~quandary:(fun f -> mk f "Quandary" QuandarySummary.pp)
+    ~racerd:(fun f -> mk f "RacerD" RacerDDomain.pp_summary)
+    ~lab_resource_leaks:(fun f -> mk f "Resource Leaks Lab" ResourceLeakDomain.pp)
+    ~siof:(fun f -> mk f "Siof" SiofDomain.Summary.pp)
+    ~starvation:(fun f -> mk f "Starvation" StarvationDomain.pp_summary)
+    ~nullsafe:(fun f -> mk f "Nullsafe" NullsafeSummary.pp)
+    ~uninit:(fun f -> mk f "Uninitialised" UninitDomain.Summary.pp)
+
+
+let pp pe f payloads =
+  List.iter fields ~f:(fun (F {field; name; pp}) ->
+      Field.get field payloads |> Option.iter ~f:(fun x -> F.fprintf f "%s: %a@\n" name (pp pe) x) )
 
 
 let empty =
@@ -83,15 +64,15 @@ let empty =
   ; biabduction= None
   ; buffer_overrun_analysis= None
   ; buffer_overrun_checker= None
-  ; class_loads= None
+  ; config_checks_between_markers= None
   ; cost= None
   ; lab_resource_leaks= None
-  ; litho= None
+  ; litho_required_props= None
   ; pulse= None
   ; purity= None
   ; quandary= None
   ; racerd= None
   ; siof= None
   ; starvation= None
-  ; typestate= None
+  ; nullsafe= None
   ; uninit= None }

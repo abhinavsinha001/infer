@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -50,7 +50,7 @@ module BuildMethodSignature = struct
         | _ ->
             None )
     | _ ->
-        raise CFrontend_config.Invalid_declaration
+        raise CFrontend_errors.Invalid_declaration
 
 
   let should_add_return_param return_type ~is_objc_method =
@@ -75,8 +75,9 @@ module BuildMethodSignature = struct
 
 
   (** Returns parameters of a function/method. They will have following order:
-            1. normal parameters
-            2. return parameter (optional) *)
+
+      + normal parameters
+      + return parameter (optional) *)
   let get_parameters qual_type_to_sil_type tenv ~block_return_type method_decl =
     let open Clang_ast_t in
     let par_to_ms_par par =
@@ -95,10 +96,12 @@ module BuildMethodSignature = struct
             |> qual_type_to_sil_type tenv
           in
           let is_pointer_to_const = CType.is_pointer_to_const qt in
+          let is_no_escape_block_arg = CAst_utils.is_no_escape_block_arg par in
           let annot = CAst_utils.sil_annot_of_type qt in
           CMethodSignature.mk_param_type name typ ~is_pointer_to_const ~annot
+            ~is_no_escape_block_arg
       | _ ->
-          raise CFrontend_config.Invalid_declaration
+          raise CFrontend_errors.Invalid_declaration
     in
     let params = List.map ~f:par_to_ms_par (CMethodProperties.get_param_decls method_decl) in
     let return_param =
@@ -111,13 +114,12 @@ module BuildMethodSignature = struct
     match decl_ref with
     | {Clang_ast_t.dr_name= Some {Clang_ast_t.ni_name}} ->
         (* In Objective-C class methods, self is not the standard self instance, since in this
-        context we don't have an instance. Instead it is used to get the class of the method.
-        We translate this variables in a different way than normal, we don't treat them as
-        variables in Sil, instead we remove them and get the class directly in the frontend.
-        For that reason, we shouldn't add them as captured variables of blocks, since they
-        don't appear anywhere else in the translation. *)
-        if is_block_inside_objc_class_method && String.equal ni_name CFrontend_config.self then
-          None
+           context we don't have an instance. Instead it is used to get the class of the method.
+           We translate this variables in a different way than normal, we don't treat them as
+           variables in Sil, instead we remove them and get the class directly in the frontend.
+           For that reason, we shouldn't add them as captured variables of blocks, since they
+           don't appear anywhere else in the translation. *)
+        if is_block_inside_objc_class_method && String.equal ni_name CFrontend_config.self then None
         else Some (Option.value_exn decl_ref.Clang_ast_t.dr_qual_type |> qual_type_to_sil_type tenv)
     | _ ->
         assert false
@@ -153,7 +155,8 @@ module BuildMethodSignature = struct
     else (return_typ, None, return_typ_annot, false)
 
 
-  let method_signature_of_decl qual_type_to_sil_type tenv method_decl ?block_return_type procname =
+  let method_signature_of_decl qual_type_to_sil_type tenv method_decl ?block_return_type
+      ?(passed_as_noescape_block_to = None) procname =
     let decl_info = Clang_ast_proj.get_decl_tuple method_decl in
     let loc = decl_info.Clang_ast_t.di_source_range in
     let ret_type, return_param_typ, ret_typ_annot, has_added_return_param =
@@ -165,7 +168,7 @@ module BuildMethodSignature = struct
     let params = get_parameters qual_type_to_sil_type tenv ~block_return_type method_decl in
     let attributes = decl_info.Clang_ast_t.di_attributes in
     let is_cpp_virtual = CMethodProperties.is_cpp_virtual method_decl in
-    let is_cpp_nothrow = CMethodProperties.is_cpp_nothrow method_decl in
+    let is_no_return = CMethodProperties.is_no_return method_decl in
     let is_variadic = CMethodProperties.is_variadic method_decl in
     let access = decl_info.Clang_ast_t.di_access in
     let pointer_to_property_opt = CMethodProperties.get_pointer_to_property method_decl in
@@ -179,7 +182,8 @@ module BuildMethodSignature = struct
     ; loc
     ; method_kind
     ; is_cpp_virtual
-    ; is_cpp_nothrow
+    ; passed_as_noescape_block_to
+    ; is_no_return
     ; is_variadic
     ; pointer_to_parent
     ; pointer_to_property_opt
@@ -187,11 +191,12 @@ module BuildMethodSignature = struct
 
 
   let method_signature_body_of_decl qual_type_to_sil_type tenv method_decl ?block_return_type
-      procname =
+      ?passed_as_noescape_block_to procname =
     let body = CMethodProperties.get_method_body method_decl in
     let init_list_instrs = CMethodProperties.get_init_list_instrs method_decl in
     let ms =
-      method_signature_of_decl qual_type_to_sil_type tenv method_decl ?block_return_type procname
+      method_signature_of_decl qual_type_to_sil_type tenv method_decl ?block_return_type
+        ?passed_as_noescape_block_to procname
     in
     (ms, body, init_list_instrs)
 end
@@ -216,6 +221,9 @@ let get_struct_decls decl =
       decl_list
   | AccessSpecDecl _
   | BlockDecl _
+  | ConceptDecl _
+  | OMPDeclareMapperDecl _
+  | OMPAllocateDecl _
   | ClassScopeFunctionSpecializationDecl _
   | EmptyDecl _
   | ExportDecl _
@@ -268,6 +276,7 @@ let get_struct_decls decl =
   | IndirectFieldDecl _
   | OMPDeclareReductionDecl _
   | UnresolvedUsingValueDecl _
+  | OMPRequiresDecl _
   | OMPThreadPrivateDecl _
   | ObjCPropertyImplDecl _
   | PragmaCommentDecl _
@@ -350,7 +359,7 @@ let get_translate_as_friend_decl decl_list =
       Some t_ptr
   | _ ->
       None
-  | exception Caml.Not_found ->
+  | exception (Not_found_s _ | Caml.Not_found) ->
       None
 
 
@@ -368,8 +377,8 @@ let get_record_definition decl =
 
 
 let mk_objc_method class_typename method_name method_kind parameters =
-  Typ.Procname.ObjC_Cpp
-    (Typ.Procname.ObjC_Cpp.make class_typename method_name method_kind Typ.NoTemplate parameters)
+  Procname.ObjC_Cpp
+    (Procname.ObjC_Cpp.make class_typename method_name method_kind Typ.NoTemplate parameters)
 
 
 let rec get_mangled_method_name function_decl_info method_decl_info =
@@ -463,8 +472,8 @@ and get_record_typename ?tenv decl =
       (* types that have methods. And in C++ struct/class/union can have methods *)
       Typ.Name.Cpp.from_qual_name Typ.NoTemplate
         (CAst_utils.get_qualified_name ~linters_mode name_info)
-  | ObjCInterfaceDecl (_, name_info, _, _, _), _
-  | ObjCImplementationDecl (_, name_info, _, _, _), _ ->
+  | ObjCInterfaceDecl (_, name_info, _, _, _), _ | ObjCImplementationDecl (_, name_info, _, _, _), _
+    ->
       CAst_utils.get_qualified_name name_info |> Typ.Name.Objc.from_qual_name
   | ObjCProtocolDecl (_, name_info, _, _, _), _ ->
       CAst_utils.get_qualified_name name_info |> Typ.Name.Objc.protocol_from_qual_name
@@ -541,23 +550,20 @@ and get_template_info tenv (fdi : Clang_ast_t.function_decl_info) =
 and mk_c_function ?tenv name function_decl_info_opt parameters =
   let file =
     match function_decl_info_opt with
-    | Some (decl_info, function_decl_info) -> (
-      match function_decl_info.Clang_ast_t.fdi_storage_class with
-      | Some "static"
-      (* when we model static functions, we cannot take the file into account to
-     create a mangled name because the file of the model is different to the real file,
-     thus the model won't work *)
-        when not (CTrans_models.is_modelled_static_function (QualifiedCppName.to_qual_string name))
-        ->
-          let file_opt =
-            (fst decl_info.Clang_ast_t.di_source_range).Clang_ast_t.sl_file
-            |> Option.map ~f:SourceFile.from_abs_path
-          in
-          let file_to_hex src = SourceFile.to_string src |> Utils.string_crc_hex32 in
-          Option.value_map ~f:file_to_hex ~default:"" file_opt
-      | _ ->
-          "" )
-    | None ->
+    (* when we model static functions, we cannot take the file into account to
+       create a mangled name because the file of the model is different to the real file,
+       thus the model won't work *)
+    | Some (decl_info, function_decl_info)
+      when function_decl_info.Clang_ast_t.fdi_is_static
+           && not (CTrans_models.is_modelled_static_function (QualifiedCppName.to_qual_string name))
+      ->
+        let file_opt =
+          (fst decl_info.Clang_ast_t.di_source_range).Clang_ast_t.sl_file
+          |> Option.map ~f:SourceFile.from_abs_path
+        in
+        let file_to_hex src = SourceFile.to_string src |> Utils.string_crc_hex32 in
+        Option.value_map ~f:file_to_hex ~default:"" file_opt
+    | _ ->
         ""
   in
   let mangled_opt, is_cpp =
@@ -576,9 +582,8 @@ and mk_c_function ?tenv name function_decl_info_opt parameters =
         Typ.NoTemplate
   in
   let mangled = file ^ mangled_name in
-  if String.is_empty mangled then
-    Typ.Procname.from_string_c_fun (QualifiedCppName.to_qual_string name)
-  else Typ.Procname.C (Typ.Procname.C.c name mangled parameters template_info)
+  if String.is_empty mangled then Procname.from_string_c_fun (QualifiedCppName.to_qual_string name)
+  else Procname.C (Procname.C.c name mangled parameters template_info)
 
 
 and mk_cpp_method ?tenv class_name method_name ?meth_decl mangled parameters =
@@ -586,11 +591,11 @@ and mk_cpp_method ?tenv class_name method_name ?meth_decl mangled parameters =
   let method_kind =
     match meth_decl with
     | Some (Clang_ast_t.CXXConstructorDecl (_, _, _, _, {xmdi_is_constexpr})) ->
-        Typ.Procname.ObjC_Cpp.CPPConstructor {mangled; is_constexpr= xmdi_is_constexpr}
+        Procname.ObjC_Cpp.CPPConstructor {mangled; is_constexpr= xmdi_is_constexpr}
     | Some (Clang_ast_t.CXXDestructorDecl _) ->
-        Typ.Procname.ObjC_Cpp.CPPDestructor {mangled}
+        Procname.ObjC_Cpp.CPPDestructor {mangled}
     | _ ->
-        Typ.Procname.ObjC_Cpp.CPPMethod {mangled}
+        Procname.ObjC_Cpp.CPPMethod {mangled}
   in
   let template_info =
     match meth_decl with
@@ -603,8 +608,8 @@ and mk_cpp_method ?tenv class_name method_name ?meth_decl mangled parameters =
     | _ ->
         Typ.NoTemplate
   in
-  Typ.Procname.ObjC_Cpp
-    (Typ.Procname.ObjC_Cpp.make class_name method_name method_kind template_info parameters)
+  Procname.ObjC_Cpp
+    (Procname.ObjC_Cpp.make class_name method_name method_kind template_info parameters)
 
 
 and get_class_typename ?tenv method_decl_info =
@@ -613,25 +618,25 @@ and get_class_typename ?tenv method_decl_info =
   | Some class_decl ->
       get_record_typename ?tenv class_decl
   | None ->
-      CFrontend_config.incorrect_assumption __POS__ method_decl_info.Clang_ast_t.di_source_range
+      CFrontend_errors.incorrect_assumption __POS__ method_decl_info.Clang_ast_t.di_source_range
         "Expecting class declaration when getting the class typename"
 
 
 and objc_method_procname ?tenv decl_info method_name mdi =
   let class_typename = get_class_typename ?tenv decl_info in
   let is_instance = mdi.Clang_ast_t.omdi_is_instance_method in
-  let method_kind = Typ.Procname.ObjC_Cpp.objc_method_kind_of_bool is_instance in
+  let method_kind = Procname.ObjC_Cpp.objc_method_kind_of_bool is_instance in
   mk_objc_method class_typename method_name method_kind
 
 
 and objc_block_procname outer_proc_opt parameters =
-  let outer_proc_string = Option.value_map ~f:Typ.Procname.to_string outer_proc_opt ~default:"" in
+  let outer_proc_string = Option.value_map ~f:Procname.to_string outer_proc_opt ~default:"" in
   let block_procname_with_index i =
     Printf.sprintf "%s%s%s%d" Config.anonymous_block_prefix outer_proc_string
       Config.anonymous_block_num_sep i
   in
   let name = block_procname_with_index (CFrontend_config.get_fresh_block_index ()) in
-  Typ.Procname.Block (Typ.Procname.Block.make name parameters)
+  Procname.Block (Procname.Block.make name parameters)
 
 
 and procname_from_decl ?tenv ?block_return_type ?outer_proc meth_decl =
@@ -649,7 +654,7 @@ and procname_from_decl ?tenv ?block_return_type ?outer_proc meth_decl =
         let captured_vars_types =
           BuildMethodSignature.types_of_captured_vars qual_type_to_sil_type tenv meth_decl
         in
-        List.map ~f:Typ.Procname.Parameter.of_typ (captured_vars_types @ parameter_types)
+        List.map ~f:Procname.Parameter.of_typ (captured_vars_types @ parameter_types)
     | None ->
         []
   in
@@ -683,8 +688,7 @@ and get_struct_methods struct_decl tenv =
       | CXXConstructorDecl _
       | CXXConversionDecl _
       | CXXDestructorDecl _
-      | ObjCMethodDecl _
-      | BlockDecl _ ->
+      | ObjCMethodDecl _ ->
           Some (procname_from_decl ~tenv decl)
       | _ ->
           None )
@@ -723,7 +727,7 @@ and get_record_struct_type tenv definition_decl : Typ.desc =
             sil_desc )
           else (
             (* There is no definition for that struct in whole translation unit.
-                Put empty struct into tenv to prevent backend problems *)
+               Put empty struct into tenv to prevent backend problems *)
             ignore (Tenv.mk_struct tenv ~fields:[] sil_typename) ;
             CAst_utils.update_sil_types_map type_ptr sil_desc ;
             sil_desc ) )
@@ -770,6 +774,8 @@ module CProcname = struct
               name_info.Clang_ast_t.ni_name
         in
         objc_method_procname decl_info method_name mdi []
+    | BlockDecl _ ->
+        Procname.Block (Procname.Block.make Config.anonymous_block_prefix [])
     | _ ->
         from_decl method_decl
 end

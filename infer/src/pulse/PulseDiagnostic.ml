@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,44 +7,80 @@
 
 open! IStd
 module F = Format
+module CallEvent = PulseCallEvent
+module Invalidation = PulseInvalidation
+module Trace = PulseTrace
+module ValueHistory = PulseValueHistory
 
 type t =
   | AccessToInvalidAddress of
-      { access: HilExp.AccessExpression.t
-      ; invalidated_by: PulseInvalidation.t PulseTrace.action
-      ; accessed_by: HilExp.AccessExpression.t PulseTrace.action
-      ; trace: PulseTrace.t }
-  | StackVariableAddressEscape of {variable: Var.t; trace: PulseTrace.t; location: Location.t}
-
-let describe_access = PulseTrace.pp_action (Pp.in_backticks HilExp.AccessExpression.pp)
-
-let describe_invalidation = PulseTrace.pp_action PulseInvalidation.describe
+      {invalidation: Invalidation.t; invalidation_trace: Trace.t; access_trace: Trace.t}
+  | MemoryLeak of {procname: Procname.t; allocation_trace: Trace.t; location: Location.t}
+  | StackVariableAddressEscape of {variable: Var.t; history: ValueHistory.t; location: Location.t}
 
 let get_location = function
-  | AccessToInvalidAddress {accessed_by} ->
-      PulseTrace.outer_location_of_action accessed_by
-  | StackVariableAddressEscape {location} ->
+  | AccessToInvalidAddress {access_trace} ->
+      Trace.get_outer_location access_trace
+  | MemoryLeak {location} | StackVariableAddressEscape {location} ->
       location
 
 
 let get_message = function
-  | AccessToInvalidAddress {access; accessed_by; invalidated_by; _} ->
-      (* TODO: [access] might be something irrelevant to the user, shouldn't print it in that case
-         *)
-      let line_of_action action =
-        let {Location.line; _} = PulseTrace.outer_location_of_action action in
+  | AccessToInvalidAddress {invalidation; invalidation_trace; access_trace} ->
+      (* The goal is to get one of the following messages depending on the scenario:
+
+         42: delete x; return x->f
+         "`x->f` accesses `x`, which was invalidated at line 42 by `delete` on `x`"
+
+         42: bar(x); return x->f
+         "`x->f` accesses `x`, which was invalidated at line 42 by `delete` on `x` in call to `bar`"
+
+         42: bar(x); foo(x);
+         "call to `foo` eventually accesses `x->f` but `x` was invalidated at line 42 by `delete` on `x` in call to `bar`"
+
+         If we don't have "x->f" but instead some non-user-visible expression, then
+         "access to `x`, which was invalidated at line 42 by `delete` on `x`"
+
+         Likewise if we don't have "x" in the second part but instead some non-user-visible expression, then
+         "`x->f` accesses `x`, which was invalidated at line 42 by `delete`"
+      *)
+      let pp_access_trace fmt (trace : Trace.t) =
+        match trace with
+        | Immediate _ ->
+            F.fprintf fmt "accessing memory that "
+        | ViaCall {f; _} ->
+            F.fprintf fmt "call to %a eventually accesses memory that " CallEvent.describe f
+      in
+      let pp_invalidation_trace line invalidation fmt (trace : Trace.t) =
+        let pp_line fmt line = F.fprintf fmt " on line %d" line in
+        match trace with
+        | Immediate _ ->
+            F.fprintf fmt "%a%a" Invalidation.describe invalidation pp_line line
+        | ViaCall {f; _} ->
+            F.fprintf fmt "%a%a indirectly during the call to %a" Invalidation.describe invalidation
+              pp_line line CallEvent.describe f
+      in
+      let invalidation_line =
+        let {Location.line; _} = Trace.get_outer_location invalidation_trace in
         line
       in
-      let invalidation_line = line_of_action invalidated_by in
-      let access_line = line_of_action accessed_by in
-      let pp_indirect_access f =
-        let erroneous_access = PulseTrace.immediate_of_action accessed_by in
-        if not (HilExp.AccessExpression.equal erroneous_access access) then
-          F.fprintf f " via %a" describe_access accessed_by
+      F.asprintf "%a%a" pp_access_trace access_trace
+        (pp_invalidation_trace invalidation_line invalidation)
+        invalidation_trace
+  | MemoryLeak {procname; location; allocation_trace} ->
+      let allocation_line =
+        let {Location.line; _} = Trace.get_outer_location allocation_trace in
+        line
       in
-      F.asprintf "access to `%a`%t at line %d is to %a on line %d" HilExp.AccessExpression.pp
-        access pp_indirect_access access_line describe_invalidation invalidated_by
-        invalidation_line
+      let pp_allocation_trace fmt (trace : Trace.t) =
+        match trace with
+        | Immediate _ ->
+            F.fprintf fmt "by call to `%a`" Procname.pp procname
+        | ViaCall {f; _} ->
+            F.fprintf fmt "by call to %a" CallEvent.describe f
+      in
+      F.asprintf "memory dynamically allocated at line %d %a, is not reachable after %a"
+        allocation_line pp_allocation_trace allocation_trace Location.pp location
   | StackVariableAddressEscape {variable; _} ->
       let pp_var f var =
         if Var.is_cpp_temporary var then F.pp_print_string f "C++ temporary"
@@ -60,36 +96,38 @@ let add_errlog_header ~title location errlog =
 
 
 let get_trace = function
-  | AccessToInvalidAddress {accessed_by; invalidated_by; trace} ->
-      let add_header_if_some ~title location_opt errlog =
-        match location_opt with
-        | None ->
-            errlog
-        | Some location ->
-            add_errlog_header ~title location errlog
-      in
-      let pp_invalid_access f access =
-        F.fprintf f "invalid access to `%a`" HilExp.AccessExpression.pp access
-      in
-      add_errlog_header ~title:"invalidation part of the trace starts here"
-        (PulseTrace.outer_location_of_action invalidated_by)
-      @@ PulseTrace.add_errlog_of_action ~nesting:1 PulseInvalidation.describe invalidated_by
-      @@ add_errlog_header ~title:"use-after-lifetime part of the trace starts here"
-           (PulseTrace.outer_location_of_action accessed_by)
-      @@ PulseTrace.add_errlog_of_action ~nesting:1 pp_invalid_access accessed_by
-      @@ add_header_if_some ~title:"trace of how the access expression was constructed starts here"
-           (PulseTrace.get_start_location trace)
-      @@ PulseTrace.add_errlog_of_trace ~nesting:1 trace
+  | AccessToInvalidAddress {invalidation; invalidation_trace; access_trace} ->
+      let start_location = Trace.get_start_location invalidation_trace in
+      add_errlog_header ~title:"invalidation part of the trace starts here" start_location
+      @@ Trace.add_to_errlog ~nesting:1
+           ~pp_immediate:(fun fmt -> F.fprintf fmt "%a" Invalidation.describe invalidation)
+           invalidation_trace
+      @@
+      let access_start_location = Trace.get_start_location access_trace in
+      add_errlog_header ~title:"use-after-lifetime part of the trace starts here"
+        access_start_location
+      @@ Trace.add_to_errlog ~nesting:1
+           ~pp_immediate:(fun fmt -> F.pp_print_string fmt "invalid access occurs here")
+           access_trace
       @@ []
-  | StackVariableAddressEscape {trace; location; _} ->
-      PulseTrace.add_errlog_of_trace ~nesting:0 trace
+  | MemoryLeak {location; allocation_trace} ->
+      let access_start_location = Trace.get_start_location allocation_trace in
+      add_errlog_header ~title:"allocation part of the trace starts here" access_start_location
+      @@ Trace.add_to_errlog ~nesting:1
+           ~pp_immediate:(fun fmt -> F.pp_print_string fmt "allocation part of the trace ends here")
+           allocation_trace
+      @@ [Errlog.make_trace_element 0 location "memory becomes unreachable here" []]
+  | StackVariableAddressEscape {history; location; _} ->
+      ValueHistory.add_to_errlog ~nesting:0 history
       @@
       let nesting = 0 in
       [Errlog.make_trace_element nesting location "returned here" []]
 
 
 let get_issue_type = function
-  | AccessToInvalidAddress {invalidated_by} ->
-      PulseTrace.immediate_of_action invalidated_by |> PulseInvalidation.issue_type_of_cause
+  | AccessToInvalidAddress {invalidation; _} ->
+      Invalidation.issue_type_of_cause invalidation
+  | MemoryLeak _ ->
+      IssueType.pulse_memory_leak
   | StackVariableAddressEscape _ ->
       IssueType.stack_variable_address_escape

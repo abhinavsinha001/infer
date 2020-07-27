@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,8 +9,8 @@ open! IStd
 module L = Logging
 
 (** In this module an ObjC category declaration or implementation is processed. The category is
-   saved in the tenv as a struct with the corresponding fields and methods , and the class it
-   belongs to *)
+    saved in the tenv as a struct with the corresponding fields and methods , and the class it
+    belongs to *)
 
 let cat_class_decl dr =
   match dr.Clang_ast_t.dr_name with Some n -> CAst_utils.get_qualified_name n | _ -> assert false

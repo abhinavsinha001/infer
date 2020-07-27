@@ -1,37 +1,31 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *)
+
 open! IStd
 module F = Format
 module L = Logging
 module ModifiedVarSet = PrettyPrintable.MakePPSet (Var)
 module InstrCFG = ProcCfg.NormalOneInstrPerNode
 
-let debug fmt = L.(debug Analysis Verbose fmt)
+let debug fmt = L.debug Analysis Verbose fmt
 
 (* A simple purity checker *)
 
-module Payload = SummaryPayload.Make (struct
-  type t = PurityDomain.summary
-
-  let update_payloads post (payloads : Payloads.t) = {payloads with purity= Some post}
-
-  let of_payloads (payloads : Payloads.t) = payloads.purity
-end)
-
-type purity_extras =
-  { inferbo_invariant_map: BufferOverrunAnalysis.invariant_map
+type analysis_data =
+  { tenv: Tenv.t
+  ; inferbo_invariant_map: BufferOverrunAnalysis.invariant_map
   ; formals: Var.t list
-  ; get_callee_summary: Typ.Procname.t -> PurityDomain.summary option }
+  ; get_callee_summary: Procname.t -> PurityDomain.summary option }
 
 module TransferFunctions = struct
   module CFG = ProcCfg.Normal
   module Domain = PurityDomain
 
-  type extras = purity_extras
+  type nonrec analysis_data = analysis_data
 
   let get_alias_set inferbo_mem var =
     let default = ModifiedVarSet.empty in
@@ -109,9 +103,9 @@ module TransferFunctions = struct
      (i.e. index of a wrt. foo's formals).
 
      void foo (int x, Object a, Object b){
-        for (...){
-           impure_fun(b, 10, a); // modifies only 3rd argument, i.e. a
-        }
+     for (...){
+     impure_fun(b, 10, a); // modifies only 3rd argument, i.e. a
+     }
      }
   *)
   let find_params_matching_modified_args inferbo_mem formals callee_args callee_modified_params =
@@ -147,8 +141,7 @@ module TransferFunctions = struct
 
   let modified_global ae = HilExp.AccessExpression.get_base ae |> fst |> Var.is_global
 
-  let exec_instr (astate : Domain.t)
-      {tenv; ProcData.extras= {inferbo_invariant_map; formals; get_callee_summary}}
+  let exec_instr (astate : Domain.t) {tenv; inferbo_invariant_map; formals; get_callee_summary}
       (node : CFG.Node.t) (instr : HilInstr.t) =
     let (node_id : InstrCFG.Node.id) =
       CFG.Node.underlying_node node |> InstrCFG.last_of_underlying_node |> InstrCFG.Node.id
@@ -162,20 +155,17 @@ module TransferFunctions = struct
         track_modified_params inferbo_mem formals ae |> Domain.join astate
     | Call (_, Direct called_pname, args, _, _) ->
         Domain.join astate
-          ( match InvariantModels.ProcName.dispatch tenv called_pname with
-          | Some inv ->
-              if InvariantModels.is_invariant inv then Domain.pure
-              else
-                find_params_matching_modified_args inferbo_mem formals args
-                  (Domain.all_params_modified args)
+          ( match PurityModels.ProcName.dispatch tenv called_pname with
+          | Some callee_summary ->
+              find_modified_if_impure inferbo_mem formals args callee_summary
           | None -> (
             match get_callee_summary called_pname with
-            | Some summary ->
-                debug "Reading from %a \n" Typ.Procname.pp called_pname ;
-                find_modified_if_impure inferbo_mem formals args summary
+            | Some callee_summary ->
+                debug "Reading from %a \n" Procname.pp called_pname ;
+                find_modified_if_impure inferbo_mem formals args callee_summary
             | None ->
-                if Typ.Procname.is_constructor called_pname then Domain.pure
-                else Domain.impure_global ) )
+                if Procname.is_constructor called_pname then Domain.pure else Domain.impure_global )
+          )
     | Call (_, Indirect _, _, _, _) ->
         (* This should never happen in Java *)
         debug "Unexpected indirect call %a" HilInstr.pp instr ;
@@ -189,50 +179,54 @@ end
 
 module Analyzer = LowerHil.MakeAbstractInterpreter (TransferFunctions)
 
-let should_report pdesc =
-  let proc_name = Procdesc.get_proc_name pdesc in
-  (not (Typ.Procname.is_constructor proc_name))
-  &&
-  match proc_name with
-  | Typ.Procname.Java java_pname ->
-      not
-        ( Typ.Procname.Java.is_class_initializer java_pname
-        || Typ.Procname.Java.is_access_method java_pname )
-  | _ ->
-      true
+let should_report proc_name =
+  not
+    ( Procname.is_constructor proc_name
+    ||
+    match proc_name with
+    | Procname.Java java_pname ->
+        Procname.Java.is_class_initializer java_pname || Procname.Java.is_access_method java_pname
+    | Procname.ObjC_Cpp name ->
+        Procname.ObjC_Cpp.is_destructor name
+        || Procname.ObjC_Cpp.is_objc_constructor name.method_name
+    | _ ->
+        false )
 
 
-let report_errors pdesc astate summary =
-  let proc_name = Procdesc.get_proc_name pdesc in
-  match astate with
+let report_errors {InterproceduralAnalysis.proc_desc; err_log} astate_opt =
+  let proc_name = Procdesc.get_proc_name proc_desc in
+  match astate_opt with
   | Some astate ->
-      if should_report pdesc && PurityDomain.is_pure astate then
-        let loc = Procdesc.get_loc pdesc in
-        let exp_desc = F.asprintf "Side-effect free function %a" Typ.Procname.pp proc_name in
+      if should_report proc_name && PurityDomain.is_pure astate then
+        let loc = Procdesc.get_loc proc_desc in
+        let exp_desc = F.asprintf "Side-effect free function %a" Procname.pp proc_name in
         let ltr = [Errlog.make_trace_element 0 loc exp_desc []] in
-        Reporting.log_error summary ~loc ~ltr IssueType.pure_function exp_desc
+        Reporting.log_issue proc_desc err_log ~loc ~ltr Purity IssueType.pure_function exp_desc
   | None ->
-      L.internal_error "Analyzer failed to compute purity information for %a@." Typ.Procname.pp
+      L.internal_error "Analyzer failed to compute purity information for %a@." Procname.pp
         proc_name
 
 
-let compute_summary proc_desc tenv get_callee_summary inferbo_invariant_map =
+let compute_summary {InterproceduralAnalysis.proc_desc; tenv; analyze_dependency}
+    inferbo_invariant_map =
   let proc_name = Procdesc.get_proc_name proc_desc in
   let formals =
     Procdesc.get_formals proc_desc
     |> List.map ~f:(fun (mname, _) -> Var.of_pvar (Pvar.mk mname proc_name))
   in
-  let proc_data =
-    ProcData.make proc_desc tenv {inferbo_invariant_map; formals; get_callee_summary}
+  let get_callee_summary callee_pname =
+    analyze_dependency callee_pname |> Option.bind ~f:(fun (_, (purity_opt, _)) -> purity_opt)
   in
-  Analyzer.compute_post proc_data ~initial:PurityDomain.pure
+  let analysis_data = {tenv; inferbo_invariant_map; formals; get_callee_summary} in
+  Analyzer.compute_post analysis_data ~initial:PurityDomain.pure proc_desc
 
 
-let checker {Callbacks.tenv; summary; proc_desc; integer_type_widths} : Summary.t =
+let checker analysis_data =
   let inferbo_invariant_map =
-    BufferOverrunAnalysis.cached_compute_invariant_map proc_desc tenv integer_type_widths
+    BufferOverrunAnalysis.cached_compute_invariant_map
+      (InterproceduralAnalysis.bind_payload ~f:snd analysis_data)
   in
-  let get_callee_summary = Payload.read proc_desc in
-  let astate = compute_summary proc_desc tenv get_callee_summary inferbo_invariant_map in
-  report_errors proc_desc astate summary ;
-  match astate with Some astate -> Payload.update_summary astate summary | None -> summary
+  let astate_opt = compute_summary analysis_data inferbo_invariant_map in
+  report_errors analysis_data astate_opt ;
+  Option.iter astate_opt ~f:(fun astate -> debug "Purity summary :%a \n" PurityDomain.pp astate) ;
+  astate_opt

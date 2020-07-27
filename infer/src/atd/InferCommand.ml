@@ -1,13 +1,13 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *)
 open Core
 
-(* NOTE: All variants must be also added to `all_commands` below *)
-type t = Analyze | Capture | Compile | Diff | Events | Explore | Report | ReportDiff | Run
+(* NOTE: All variants must be also added to [command_to_string] below *)
+type t = Analyze | Capture | Compile | Debug | Explore | Help | Report | ReportDiff | Run
 [@@deriving compare]
 
 let equal = [%compare.equal: t]
@@ -16,9 +16,9 @@ let command_to_string =
   [ (Analyze, "analyze")
   ; (Capture, "capture")
   ; (Compile, "compile")
-  ; (Diff, "diff")
-  ; (Events, "events")
+  ; (Debug, "debug")
   ; (Explore, "explore")
+  ; (Help, "help")
   ; (Report, "report")
   ; (ReportDiff, "reportdiff")
   ; (Run, "run") ]

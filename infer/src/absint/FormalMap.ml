@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -36,6 +36,8 @@ let get_formal_base index t =
   |> Option.map ~f:fst
 
 
-let get_formals_indexes = AccessPath.BaseMap.bindings
-
 let pp = AccessPath.BaseMap.pp ~pp_value:Int.pp
+
+let cardinal = AccessPath.BaseMap.cardinal
+
+let iter = AccessPath.BaseMap.iter

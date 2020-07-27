@@ -1,114 +1,56 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *)
 open! IStd
 module F = Format
+module CallEvent = PulseCallEvent
+module ValueHistory = PulseValueHistory
 
-type breadcrumb =
-  | VariableDeclaration of Location.t
-  | CppTemporaryCreated of Location.t
-  | Assignment of {lhs: HilExp.AccessExpression.t; location: Location.t}
-  | Capture of
-      { captured_as: AccessPath.base
-      ; captured: HilExp.AccessExpression.t
-      ; location: Location.t }
-  | Call of
-      { f: [`HilCall of HilInstr.call | `Model of string]
-      ; actuals: HilExp.t list
-      ; location: Location.t }
+type t =
+  | Immediate of {location: Location.t; history: ValueHistory.t}
+  | ViaCall of {f: CallEvent.t; location: Location.t; history: ValueHistory.t; in_call: t}
 [@@deriving compare]
 
-let pp_breadcrumb_no_location fmt = function
-  | VariableDeclaration _ ->
-      F.pp_print_string fmt "variable declared"
-  | CppTemporaryCreated _ ->
-      F.pp_print_string fmt "C++ temporary created"
-  | Capture {captured_as; captured; location= _} ->
-      F.fprintf fmt "`%a` captured as `%a`" HilExp.AccessExpression.pp captured AccessPath.pp_base
-        captured_as
-  | Assignment {lhs; location= _} ->
-      F.fprintf fmt "assigned to `%a`" HilExp.AccessExpression.pp lhs
-  | Call {f; actuals; location= _} ->
-      let pp_f fmt = function
-        | `HilCall call ->
-            F.fprintf fmt "%a" HilInstr.pp_call call
-        | `Model model ->
-            F.pp_print_string fmt model
+let get_outer_location = function Immediate {location; _} | ViaCall {location; _} -> location
+
+let get_outer_history = function Immediate {history; _} | ViaCall {history; _} -> history
+
+let get_start_location trace =
+  match get_outer_history trace |> List.last with
+  | Some event ->
+      ValueHistory.location_of_event event
+  | None ->
+      get_outer_location trace
+
+
+let rec pp ~pp_immediate fmt trace =
+  if Config.debug_level_analysis < 3 then pp_immediate fmt
+  else
+    match trace with
+    | Immediate {location= _; history} ->
+        F.fprintf fmt "%a::%t" ValueHistory.pp history pp_immediate
+    | ViaCall {f; location= _; history; in_call} ->
+        F.fprintf fmt "%a::%a[%a]" ValueHistory.pp history CallEvent.pp f (pp ~pp_immediate) in_call
+
+
+let rec add_to_errlog ?(include_value_history = true) ~nesting ~pp_immediate trace errlog =
+  match trace with
+  | Immediate {location; history} ->
+      let acc =
+        Errlog.make_trace_element nesting location (F.asprintf "%t" pp_immediate) [] :: errlog
       in
-      F.fprintf fmt "returned from call to `%a(%a)`" pp_f f (Pp.seq ~sep:"," HilExp.pp) actuals
-
-
-let location_of_breadcrumb = function
-  | VariableDeclaration location
-  | CppTemporaryCreated location
-  | Assignment {location}
-  | Capture {location}
-  | Call {location} ->
-      location
-
-
-let pp_breadcrumb fmt crumb =
-  F.fprintf fmt "%a at %a" pp_breadcrumb_no_location crumb Location.pp_line
-    (location_of_breadcrumb crumb)
-
-
-let errlog_trace_elem_of_breadcrumb ~nesting crumb =
-  let location = location_of_breadcrumb crumb in
-  let description = F.asprintf "%a" pp_breadcrumb_no_location crumb in
-  let tags = [] in
-  Errlog.make_trace_element nesting location description tags
-
-
-type t = breadcrumb list [@@deriving compare]
-
-let pp f trace = Pp.seq ~print_env:Pp.text_break pp_breadcrumb f trace
-
-let add_errlog_of_trace ~nesting trace errlog =
-  List.rev_map_append ~f:(errlog_trace_elem_of_breadcrumb ~nesting) trace errlog
-
-
-let get_start_location = function [] -> None | crumb :: _ -> Some (location_of_breadcrumb crumb)
-
-type 'a action =
-  | Immediate of {imm: 'a; location: Location.t}
-  | ViaCall of {action: 'a action; proc_name: Typ.Procname.t; location: Location.t}
-[@@deriving compare]
-
-let pp_action pp_immediate fmt = function
-  | Immediate {imm; _} ->
-      pp_immediate fmt imm
-  | ViaCall {proc_name; _} ->
-      F.fprintf fmt "call to `%a`" Typ.Procname.describe proc_name
-
-
-let rec immediate_of_action = function
-  | Immediate {imm; _} ->
-      imm
-  | ViaCall {action; _} ->
-      immediate_of_action action
-
-
-let add_errlog_of_action ~nesting pp_immediate action errlog =
-  let rec aux ~nesting rev_errlog action =
-    match action with
-    | Immediate {imm; location} ->
-        let rev_errlog =
-          Errlog.make_trace_element nesting location (F.asprintf "%a here" pp_immediate imm) []
-          :: rev_errlog
-        in
-        List.rev_append rev_errlog errlog
-    | ViaCall {action; proc_name; location} ->
-        aux ~nesting:(nesting + 1)
-          ( Errlog.make_trace_element nesting location
-              (F.asprintf "when calling `%a` here" Typ.Procname.describe proc_name)
-              []
-          :: rev_errlog )
-          action
-  in
-  aux ~nesting [] action
-
-
-let outer_location_of_action = function Immediate {location} | ViaCall {location} -> location
+      if include_value_history then ValueHistory.add_to_errlog ~nesting history @@ acc else acc
+  | ViaCall {f; location; in_call; history} ->
+      let acc =
+        (fun errlog ->
+          Errlog.make_trace_element nesting location
+            (F.asprintf "when calling %a here" CallEvent.pp f)
+            []
+          :: errlog )
+        @@ add_to_errlog ~include_value_history ~nesting:(nesting + 1) ~pp_immediate in_call
+        @@ errlog
+      in
+      if include_value_history then ValueHistory.add_to_errlog ~nesting history @@ acc else acc

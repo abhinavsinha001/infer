@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,24 +9,17 @@ open! IStd
 open PolyVariantEqual
 module L = Logging
 
-let count_newlines (path : string) : int =
-  let f file = In_channel.fold_lines file ~init:0 ~f:(fun i _ -> i + 1) in
-  In_channel.with_file path ~f
-
-
 type t =
   | Invalid of {ml_source_file: string}
   | Absolute of string
   | RelativeProjectRoot of string  (** relative to project root *)
-  | RelativeInferModel of string  (** relative to infer models *)
+  | RelativeInferBiabductionModel of string  (** relative to infer models *)
 [@@deriving compare]
 
 let equal = [%compare.equal: t]
 
 module OrderedSourceFile = struct
-  type nonrec t = t
-
-  let compare = compare
+  type nonrec t = t [@@deriving compare]
 end
 
 module Map = Caml.Map.Make (OrderedSourceFile)
@@ -46,7 +39,7 @@ let from_abs_path ?(warn_on_error = true) fname =
   (* try to get realpath of source file. Use original if it fails *)
   let fname_real = try Utils.realpath ~warn_on_error fname with Unix.Unix_error _ -> fname in
   let project_root_real = Utils.realpath ~warn_on_error Config.project_root in
-  let models_dir_real = Config.models_src_dir in
+  let models_dir_real = Config.biabduction_models_src_dir in
   match
     Utils.filename_to_relative ~backtrack:Config.relative_path_backtrack ~root:project_root_real
       fname_real
@@ -58,7 +51,7 @@ let from_abs_path ?(warn_on_error = true) fname =
   | None -> (
     match Utils.filename_to_relative ~root:models_dir_real fname_real with
     | Some path ->
-        RelativeInferModel path
+        RelativeInferBiabductionModel path
     | None ->
         (* fname_real is absolute already *)
         Absolute fname_real )
@@ -70,7 +63,7 @@ let to_string =
     match fname with
     | Invalid {ml_source_file} ->
         "DUMMY from " ^ ml_source_file
-    | RelativeInferModel path ->
+    | RelativeInferBiabductionModel path ->
         "INFER_MODEL/" ^ path
     | RelativeProjectRoot path ->
         path
@@ -89,42 +82,26 @@ let to_abs_path fname =
         "cannot be called with Invalid source file originating in %s" ml_source_file
   | RelativeProjectRoot path ->
       Filename.concat Config.project_root path
-  | RelativeInferModel path ->
-      Filename.concat Config.models_src_dir path
+  | RelativeInferBiabductionModel path ->
+      Filename.concat Config.biabduction_models_src_dir path
   | Absolute path ->
       path
 
 
-let line_count source_file =
-  let abs_path = to_abs_path source_file in
-  count_newlines abs_path
-
-
-let to_rel_path fname =
-  match fname with RelativeProjectRoot path -> path | _ -> to_abs_path fname
-
+let to_rel_path fname = match fname with RelativeProjectRoot path -> path | _ -> to_abs_path fname
 
 let invalid ml_source_file = Invalid {ml_source_file}
 
 let is_invalid = function Invalid _ -> true | _ -> false
 
-let is_infer_model source_file =
+let is_biabduction_model source_file =
   match source_file with
   | Invalid {ml_source_file} ->
       L.(die InternalError) "cannot be called with Invalid source file from %s" ml_source_file
   | RelativeProjectRoot _ | Absolute _ ->
       false
-  | RelativeInferModel _ ->
+  | RelativeInferBiabductionModel _ ->
       true
-
-
-(** Returns true if the file is a C++ model *)
-let is_cpp_model file =
-  match file with
-  | RelativeInferModel path ->
-      String.is_prefix ~prefix:Config.relative_cpp_models_dir path
-  | _ ->
-      false
 
 
 let is_under_project_root = function
@@ -132,7 +109,7 @@ let is_under_project_root = function
       L.(die InternalError) "cannot be called with Invalid source file from %s" ml_source_file
   | RelativeProjectRoot _ ->
       true
-  | Absolute _ | RelativeInferModel _ ->
+  | Absolute _ | RelativeInferBiabductionModel _ ->
       false
 
 
@@ -169,30 +146,37 @@ let create ?(warn_on_error = true) path =
 
 let changed_sources_from_changed_files changed_files =
   List.fold changed_files ~init:Set.empty ~f:(fun changed_files_set line ->
-      let source_file = create line in
-      let changed_files' = Set.add source_file changed_files_set in
-      (* Add source corresponding to changed header if it exists *)
-      match of_header source_file with
-      | Some src ->
-          Set.add src changed_files'
-      | None ->
-          changed_files' )
+      try
+        let source_file = create line in
+        let changed_files' = Set.add source_file changed_files_set in
+        (* Add source corresponding to changed header if it exists *)
+        match of_header source_file with
+        | Some src ->
+            Set.add src changed_files'
+        | None ->
+            changed_files'
+      with _exn -> changed_files_set )
 
 
 module SQLite = struct
-  type nonrec t = t
+  module T = struct
+    type nonrec t = t
+  end
+
+  module Serializer = SqliteUtils.MarshalledDataForComparison (T)
+  include T
 
   let serialize = function
     | RelativeProjectRoot path ->
         (* show the most common paths as text (for debugging, possibly perf) *)
         Sqlite3.Data.TEXT path
     | _ as x ->
-        Sqlite3.Data.BLOB (Marshal.to_string x [])
+        Serializer.serialize x
 
 
-  let deserialize = function[@warning "-8"]
+  let deserialize = function
     | Sqlite3.Data.TEXT rel_path ->
         RelativeProjectRoot rel_path
-    | Sqlite3.Data.BLOB b ->
-        Marshal.from_string b 0
+    | blob ->
+        Serializer.deserialize blob
 end

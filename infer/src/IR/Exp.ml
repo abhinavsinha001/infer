@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -11,13 +11,14 @@
 open! IStd
 module Hashtbl = Caml.Hashtbl
 module F = Format
+module L = Logging
 
 (* reverse the natural order on Var *)
 type ident_ = Ident.t
 
 let compare_ident_ x y = Ident.compare y x
 
-type closure = {name: Typ.Procname.t; captured_vars: (t * Pvar.t * Typ.t) list}
+type closure = {name: Procname.t; captured_vars: (t * Pvar.t * Typ.t * Pvar.capture_mode) list}
 
 (** This records information about a [sizeof(typ)] expression.
 
@@ -41,7 +42,7 @@ and t =
   | Const of Const.t  (** Constants *)
   | Cast of Typ.t * t  (** Type cast *)
   | Lvar of Pvar.t  (** The address of a program variable *)
-  | Lfield of t * Typ.Fieldname.t * Typ.t
+  | Lfield of t * Fieldname.t * Typ.t
       (** A field offset, the type is the surrounding struct type *)
   | Lindex of t * t  (** An array index offset: [exp1\[exp2\]] *)
   | Sizeof of sizeof_data
@@ -52,21 +53,15 @@ let equal = [%compare.equal: t]
 let hash = Hashtbl.hash
 
 module Set = Caml.Set.Make (struct
-  type nonrec t = t
-
-  let compare = compare
+  type nonrec t = t [@@deriving compare]
 end)
 
 module Map = Caml.Map.Make (struct
-  type nonrec t = t
-
-  let compare = compare
+  type nonrec t = t [@@deriving compare]
 end)
 
 module Hash = Hashtbl.Make (struct
-  type nonrec t = t
-
-  let equal = equal
+  type nonrec t = t [@@deriving equal]
 
   let hash = hash
 end)
@@ -77,10 +72,12 @@ let is_this = function Lvar pvar -> Pvar.is_this pvar | _ -> false
 
 let is_zero = function Const (Cint n) -> IntLit.iszero n | _ -> false
 
+let rec is_const = function Const _ -> true | Cast (_, x) -> is_const x | _ -> false
+
 (** {2 Utility Functions for Expressions} *)
 
-(** Turn an expression representing a type into the type it represents
-    If not a sizeof, return the default type if given, otherwise raise an exception *)
+(** Turn an expression representing a type into the type it represents If not a sizeof, return the
+    default type if given, otherwise raise an exception *)
 let texp_to_typ default_opt = function
   | Sizeof {typ} ->
       typ
@@ -109,8 +106,8 @@ let rec root_of_lexp lexp =
       lexp
 
 
-(** Checks whether an expression denotes a location by pointer arithmetic.
-    Currently, catches array-indexing expressions such as a[i] only. *)
+(** Checks whether an expression denotes a location by pointer arithmetic. Currently, catches
+    array-indexing expressions such as a[i] only. *)
 let rec pointer_arith = function
   | Lfield (e, _, _) ->
       pointer_arith e
@@ -158,6 +155,8 @@ let minus_one = int IntLit.minus_one
 (** Create integer constant corresponding to the boolean value *)
 let bool b = if b then one else zero
 
+let and_2ary e1 e2 = BinOp (LAnd, e1, e2)
+
 (** Create expression [e1 == e2] *)
 let eq e1 e2 = BinOp (Eq, e1, e2)
 
@@ -170,6 +169,12 @@ let le e1 e2 = BinOp (Le, e1, e2)
 (** Create expression [e1 < e2] *)
 let lt e1 e2 = BinOp (Lt, e1, e2)
 
+let nary_of_2ary op_2ary zero es =
+  match es with [] -> zero | e :: es -> List.fold ~init:e ~f:op_2ary es
+
+
+let and_nary = nary_of_2ary and_2ary one
+
 let fold_captured ~f exp acc =
   let rec fold_captured_ exp captured_acc =
     match exp with
@@ -179,7 +184,7 @@ let fold_captured ~f exp acc =
         fold_captured_ e1 captured_acc |> fold_captured_ e2
     | Closure {captured_vars} ->
         List.fold captured_vars
-          ~f:(fun acc (captured_exp, _, _) -> f acc captured_exp)
+          ~f:(fun acc (captured_exp, _, _, _) -> f acc captured_exp)
           ~init:captured_acc
     | Const _ | Lvar _ | Var _ | Sizeof _ ->
         captured_acc
@@ -229,7 +234,7 @@ let rec pp_ pe pp_t f e =
   | Lvar pv ->
       Pvar.pp pe f pv
   | Lfield (e, fld, _) ->
-      F.fprintf f "%a.%a" pp_exp e Typ.Fieldname.pp fld
+      F.fprintf f "%a.%a" pp_exp e Fieldname.pp fld
   | Lindex (e1, e2) ->
       F.fprintf f "%a[%a]" pp_exp e1 pp_exp e2
   | Sizeof {typ; nbytes; dynamic_length; subtype} ->
@@ -244,12 +249,14 @@ let rec pp_ pe pp_t f e =
         subtype
 
 
-and pp_captured_var pe pp_t f (exp, var, typ) =
+and pp_captured_var pe pp_t f (exp, var, typ, mode) =
   match exp with
   | Lvar evar when Pvar.equal var evar ->
       (Pvar.pp pe) f var
   | _ ->
-      F.fprintf f "(%a %a:%a)" (pp_ pe pp_t) exp (Pvar.pp pe) var (Typ.pp pe) typ
+      F.fprintf f "([%s]%a %a:%a)"
+        (Pvar.string_of_capture_mode mode)
+        (pp_ pe pp_t) exp (Pvar.pp pe) var (Typ.pp pe) typ
 
 
 let pp_printenv ~print_types pe f e =
@@ -261,12 +268,54 @@ let pp f e = pp_printenv ~print_types:false Pp.text f e
 
 let to_string e = F.asprintf "%a" pp e
 
-let is_objc_block_closure = function
-  | Closure {name} ->
-      Typ.Procname.is_objc_block name
-  | _ ->
-      false
+let color_wrapper ~f = if Config.print_using_diff then Pp.color_wrapper ~f else f
 
+let pp_diff ?(print_types = false) =
+  color_wrapper ~f:(fun pe f e0 ->
+      let e =
+        match pe.Pp.obj_sub with
+        | Some sub ->
+            (* apply object substitution to expression *) Obj.obj (sub (Obj.repr e0))
+        | None ->
+            e0
+      in
+      if not (equal e0 e) then match e with Lvar pvar -> Pvar.pp_value f pvar | _ -> assert false
+      else pp_printenv ~print_types pe f e )
+
+
+(** dump an expression. *)
+let d_exp (e : t) = L.d_pp_with_pe pp_diff e
+
+(** Pretty print a list of expressions. *)
+let pp_list pe f expl = Pp.seq (pp_diff pe) f expl
+
+(** dump a list of expressions. *)
+let d_list (el : t list) = L.d_pp_with_pe pp_list el
+
+let pp_texp pe f = function
+  | Sizeof {typ; nbytes; dynamic_length; subtype} ->
+      let pp_len f l = Option.iter ~f:(F.fprintf f "[%a]" (pp_diff pe)) l in
+      let pp_size f size = Option.iter ~f:(Int.pp f) size in
+      F.fprintf f "%a%a%a%a" (Typ.pp pe) typ pp_size nbytes pp_len dynamic_length Subtype.pp subtype
+  | e ->
+      pp_diff pe f e
+
+
+(** Pretty print a type with all the details. *)
+let pp_texp_full pe f = function
+  | Sizeof {typ; nbytes; dynamic_length; subtype} ->
+      let pp_len f l = Option.iter ~f:(F.fprintf f "[%a]" (pp_diff pe)) l in
+      let pp_size f size = Option.iter ~f:(Int.pp f) size in
+      F.fprintf f "%a%a%a%a" (Typ.pp_full pe) typ pp_size nbytes pp_len dynamic_length Subtype.pp
+        subtype
+  | e ->
+      pp_diff ~print_types:true pe f e
+
+
+(** Dump a type expression with all the details. *)
+let d_texp_full (te : t) = L.d_pp_with_pe pp_texp_full te
+
+let is_objc_block_closure = function Closure {name} -> Procname.is_objc_block name | _ -> false
 
 let rec gen_free_vars =
   let open Sequence.Generator in
@@ -276,7 +325,7 @@ let rec gen_free_vars =
   | Cast (_, e) | Exn e | Lfield (e, _, _) | Sizeof {dynamic_length= Some e} | UnOp (_, e, _) ->
       gen_free_vars e
   | Closure {captured_vars} ->
-      ISequence.gen_sequence_list captured_vars ~f:(fun (e, _, _) -> gen_free_vars e)
+      ISequence.gen_sequence_list captured_vars ~f:(fun (e, _, _, _) -> gen_free_vars e)
   | Const (Cint _ | Cfun _ | Cstr _ | Cfloat _ | Cclass _) | Lvar _ | Sizeof {dynamic_length= None}
     ->
       return ()
@@ -300,10 +349,38 @@ let rec gen_program_vars =
   | BinOp (_, e1, e2) | Lindex (e1, e2) ->
       gen_program_vars e1 >>= fun () -> gen_program_vars e2
   | Closure {captured_vars} ->
-      ISequence.gen_sequence_list captured_vars ~f:(fun (e, _, _) -> gen_program_vars e)
+      ISequence.gen_sequence_list captured_vars ~f:(fun (e, _, _, _) -> gen_program_vars e)
 
 
 let program_vars e = Sequence.Generator.run (gen_program_vars e)
+
+let rec rename_pvars ~(f : string -> string) : t -> t =
+  let re e = rename_pvars ~f e in
+  let rv v = Pvar.rename ~f v in
+  function
+  | UnOp (op, e, t) ->
+      UnOp (op, re e, t)
+  | BinOp (op, e1, e2) ->
+      BinOp (op, re e1, re e2)
+  | Exn e ->
+      Exn (re e)
+  | Closure {name; captured_vars} ->
+      let captured_vars = List.map ~f:(function e, v, t, m -> (re e, rv v, t, m)) captured_vars in
+      Closure {name; captured_vars}
+  | Cast (t, e) ->
+      Cast (t, re e)
+  | Lvar v ->
+      Lvar (rv v)
+  | Lfield (e, fld, t) ->
+      Lfield (re e, fld, t)
+  | Lindex (e1, e2) ->
+      Lindex (re e1, re e2)
+  | Sizeof {typ; nbytes; dynamic_length; subtype} ->
+      let dynamic_length = Option.map ~f:re dynamic_length in
+      Sizeof {typ; nbytes; dynamic_length; subtype}
+  | e (* Should have only cases without subexpressions. *) ->
+      e
+
 
 let zero_of_type typ =
   match typ.Typ.desc with
@@ -323,3 +400,19 @@ let rec ignore_cast e = match e with Cast (_, e) -> ignore_cast e | _ -> e
 
 let rec ignore_integer_cast e =
   match e with Cast (t, e) when Typ.is_int t -> ignore_integer_cast e | _ -> e
+
+
+let rec get_java_class_initializer tenv = function
+  | Lfield (Lvar pvar, fn, typ) when Pvar.is_global pvar -> (
+    match Struct.get_field_type_and_annotation ~lookup:(Tenv.lookup tenv) fn typ with
+    | Some (field_typ, annot) when Annot.Item.is_final annot ->
+        let java_class =
+          Typ.JavaClass (JavaClassName.from_string (Mangled.to_string_full (Pvar.get_name pvar)))
+        in
+        Some (Procname.Java (Procname.Java.get_class_initializer java_class), pvar, fn, field_typ)
+    | _ ->
+        None )
+  | Cast (_, e) | Lfield (e, _, _) ->
+      get_java_class_initializer tenv e
+  | Lvar _ | Var _ | UnOp _ | BinOp _ | Exn _ | Closure _ | Const _ | Lindex _ | Sizeof _ ->
+      None

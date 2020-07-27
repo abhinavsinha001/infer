@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -27,9 +27,7 @@ module MockTraceElem = struct
 
 
   module Kind = struct
-    type nonrec t = t
-
-    let compare = compare
+    type nonrec t = t [@@deriving compare]
 
     let matches = matches
 
@@ -37,9 +35,7 @@ module MockTraceElem = struct
   end
 
   module Set = PrettyPrintable.MakePPSet (struct
-    type nonrec t = t
-
-    let compare = compare
+    type nonrec t = t [@@deriving compare]
 
     let pp = pp
   end)
@@ -71,7 +67,7 @@ module MockSink = struct
   let equal = [%compare.equal: t]
 end
 
-module MockTrace = Trace.Make (struct
+module MockTrace = TaintTrace.Make (struct
   module Source = MockSource
   module Sink = MockSink
   module Sanitizer = Sanitizer.Dummy
@@ -82,7 +78,7 @@ module MockTrace = Trace.Make (struct
     else None
 end)
 
-let trace_equal t1 t2 = MockTrace.( <= ) ~lhs:t1 ~rhs:t2 && MockTrace.( <= ) ~lhs:t2 ~rhs:t1
+let trace_equal t1 t2 = MockTrace.leq ~lhs:t1 ~rhs:t2 && MockTrace.leq ~lhs:t2 ~rhs:t1
 
 let source_equal s source = MockSource.equal s source
 
@@ -116,9 +112,7 @@ let tests =
   let append =
     let append_ _ =
       let call_site = CallSite.dummy in
-      let footprint_ap =
-        AccessPath.Abs.Exact (AccessPath.of_id (Ident.create_none ()) (Typ.mk Tvoid))
-      in
+      let footprint_ap = AccessPath.Abs.Exact (AccessPath.of_id (Ident.create_none ()) Typ.void) in
       let source_trace = MockTrace.of_source source1 in
       let footprint_trace = MockTrace.of_footprint footprint_ap |> MockTrace.add_sink sink1 in
       let expected_trace = MockTrace.of_source source1 |> MockTrace.add_sink sink1 in

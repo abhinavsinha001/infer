@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -13,9 +13,24 @@ void out_of_bound_Bad(std::vector<int> v) {
   v[n] = 1;
 }
 
+void simple_size_Good() {
+  std::vector<int> v(3);
+  v[v.size() - 1] = 2;
+}
+
+void simple_size_Bad() {
+  std::vector<int> v(3);
+  v[v.size()] = 2;
+}
+
 void constructor_Good() {
   std::vector<int> v(1);
   v[0] = 2;
+}
+
+void constructor_Bad() {
+  std::vector<int> v(1);
+  v[3] = 2;
 }
 
 void push_back_Good() {
@@ -27,6 +42,18 @@ void push_back_Good() {
 void push_back_Bad() {
   std::vector<int> v;
   v.push_back(1);
+  v[1] = 2;
+}
+
+void emplace_back_Good() {
+  std::vector<int> v;
+  v.emplace_back(1);
+  v[0] = 2;
+}
+
+void emplace_back_Bad() {
+  std::vector<int> v;
+  v.emplace_back(1);
   v[1] = 2;
 }
 
@@ -68,39 +95,6 @@ void safe_access2(std::vector<int> v) {
 void call_safe_access2_Good() {
   std::vector<int> v;
   safe_access2(v);
-}
-
-struct Int_no_copy {
-  Int_no_copy(Int_no_copy&) = delete;
-  Int_no_copy(const Int_no_copy&) = delete;
-  Int_no_copy(volatile Int_no_copy&) = delete;
-  Int_no_copy(const volatile Int_no_copy&) = delete;
-  Int_no_copy(int i) : _i(i) {}
-  int get_int() { return _i; }
-
- private:
-  int _i;
-};
-
-void just_test_model_FP(void) {
-  std::vector<Int_no_copy> v;
-  v.push_back(Int_no_copy(0));
-  v.erase(v.cbegin());
-  v.erase(v.cbegin(), v.cend());
-  const Int_no_copy ci(1);
-  const Int_no_copy& cr = ci;
-  v.insert(v.cbegin(), cr);
-  v.insert(v.cbegin(), std::move(Int_no_copy(2)));
-  v.emplace(v.cbegin(), 3);
-  v.insert(v.cbegin(), 42, cr);
-  int x = v[0].get_int();
-  std::list<int> l;
-  std::vector<int> v2(l.begin(), l.end());
-  v2.insert(v2.cbegin(), l.begin(), l.end());
-  v2.assign(l.begin(), l.end());
-  const std::vector<int> v3{1, 2, 3};
-  int y = v3[0];
-  int z = v3.at(1);
 }
 
 void safe_access3_Good() {
@@ -220,4 +214,16 @@ void precise_subst_Bad() {
   char a[10];
   CharVector v(a);
   access_minus_one(0, v);
+}
+
+void resize_Good() {
+  std::vector<int> v;
+  v.resize(1);
+  v[0] = 0;
+}
+
+void resize_Bad() {
+  std::vector<int> v;
+  v.resize(1);
+  v[1] = 0;
 }

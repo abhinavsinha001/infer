@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -42,11 +42,7 @@ module TraceElem = struct
 
 
   module Set = PrettyPrintable.MakePPSet (struct
-    (* Don't use nonrec due to https://github.com/janestreet/ppx_compare/issues/2 *)
-    (* type nonrec t = t [@@deriving compare]; *)
-    type nonrec t = t
-
-    let compare = compare
+    type nonrec t = t [@@deriving compare]
 
     let pp = pp
   end)
@@ -55,7 +51,7 @@ end
 include SinkTrace.Make (TraceElem)
 
 let make_access kind loc =
-  let site = CallSite.make Typ.Procname.empty_block loc in
+  let site = CallSite.make Procname.empty_block loc in
   {TraceElem.kind= (`Access, kind); site}
 
 
@@ -66,7 +62,7 @@ let trace_of_error loc gname path =
     if is_intraprocedural_access sink then Format.asprintf "%a" Sink.pp sink
     else
       let callsite = Sink.call_site sink in
-      Format.asprintf "call to %a" Typ.Procname.pp (CallSite.pname callsite)
+      Format.asprintf "call to %a" Procname.pp (CallSite.pname callsite)
   in
   let sink_should_nest sink = not (is_intraprocedural_access sink) in
   let trace_elem_of_global =

@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,9 +9,9 @@ open! IStd
 module F = Format
 
 module Procname = struct
-  type t = Typ.Procname.t [@@deriving compare]
+  type t = Procname.t [@@deriving compare]
 
-  let pp = Typ.Procname.pp
+  let pp = Procname.pp
 end
 
 module ProcnameSet = AbstractDomain.FiniteSet (Procname)
@@ -21,18 +21,18 @@ module TransferFunctions (CFG : ProcCfg.S) = struct
   module CFG = CFG
   module Domain = Domain
 
-  type extras = ProcData.no_extras
+  type analysis_data = unit
 
-  let exec_instr astate _ _ = function
-    | Sil.Load (lhs_id, _, _, _) when Ident.is_none lhs_id ->
+  let exec_instr astate () _ = function
+    | Sil.Load {id= lhs_id} when Ident.is_none lhs_id ->
         astate
-    | Sil.Load (lhs_id, Exp.Lvar rhs_pvar, Typ.{desc= Tptr ({desc= Tfun _}, _)}, _) ->
+    | Sil.Load {id= lhs_id; e= Exp.Lvar rhs_pvar; typ= Typ.{desc= Tptr ({desc= Tfun}, _)}} ->
         let fun_ptr =
           try Domain.find (Pvar.to_string rhs_pvar) astate
           with Caml.Not_found -> ProcnameSet.empty
         in
         Domain.add (Ident.to_string lhs_id) fun_ptr astate
-    | Sil.Store (Lvar lhs_pvar, _, Exp.Const (Const.Cfun pn), _) ->
+    | Sil.Store {e1= Lvar lhs_pvar; e2= Exp.Const (Const.Cfun pn)} ->
         (* strong update *)
         Domain.add (Pvar.to_string lhs_pvar) (ProcnameSet.singleton pn) astate
     | Sil.Load _ | Store _ | Call _ | Prune _ | Metadata _ ->
@@ -90,13 +90,12 @@ let substitute_function_ptrs ~function_pointers node instr =
       instr
 
 
-let get_function_pointers proc_desc tenv =
-  let proc_data = ProcData.make_default proc_desc tenv in
+let get_function_pointers proc_desc =
   let cfg = CFG.from_pdesc proc_desc in
-  Analyzer.exec_cfg cfg proc_data ~initial:Domain.empty
+  Analyzer.exec_cfg cfg () ~initial:Domain.empty
 
 
-let substitute_function_pointers proc_desc tenv =
-  let function_pointers = get_function_pointers proc_desc tenv in
+let substitute_function_pointers proc_desc =
+  let function_pointers = get_function_pointers proc_desc in
   let f = substitute_function_ptrs ~function_pointers in
   Procdesc.replace_instrs proc_desc ~f

@@ -1,4 +1,4 @@
-# Copyright (c) 2017-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -40,15 +40,15 @@ $(EXPECTED_TEST_OUTPUT): $(CURRENT_REPORT) $(PREVIOUS_REPORT) $(MODIFIED_FILES_F
 		--costs-current $(CURRENT_COSTS) --costs-previous $(PREVIOUS_COSTS) \
 		$(DIFFERENTIAL_ARGS))
 	$(QUIET)$(INFER_BIN) report -o $(INFER_OUT) \
-		--issues-fields $(INFERPRINT_ISSUES_FIELDS) \
+		--issues-tests-fields $(INFERPRINT_ISSUES_FIELDS) \
 		--from-json-report $(INFER_OUT)/differential/introduced.json \
 		--issues-tests introduced.exp.test
 	$(QUIET)$(INFER_BIN) report -o $(INFER_OUT) \
-		--issues-fields $(INFERPRINT_ISSUES_FIELDS) \
+		--issues-tests-fields $(INFERPRINT_ISSUES_FIELDS) \
 		--from-json-report $(INFER_OUT)/differential/fixed.json \
 		--issues-tests fixed.exp.test
 	$(QUIET)$(INFER_BIN) report -o $(INFER_OUT) \
-		--issues-fields $(INFERPRINT_ISSUES_FIELDS) \
+		--issues-tests-fields $(INFERPRINT_ISSUES_FIELDS) \
 		--from-json-report $(INFER_OUT)/differential/preexisting.json \
 		--issues-tests preexisting.exp.test
 	$(QUIET)$(COPY) $(INFER_OUT)/differential/costs_summary.json \

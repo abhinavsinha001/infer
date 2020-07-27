@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -29,9 +29,9 @@ let printf_like_functions =
       ; vararg_pos= Some 3 } ]
 
 
-let printf_like_function (proc_name : Typ.Procname.t) : printf_signature option =
+let printf_like_function (proc_name : Procname.t) : printf_signature option =
   List.find
-    ~f:(fun printf -> String.equal printf.unique_id (Typ.Procname.to_unique_id proc_name))
+    ~f:(fun printf -> String.equal printf.unique_id (Procname.to_unique_id proc_name))
     !printf_like_functions
 
 
@@ -97,11 +97,11 @@ let rec format_string_type_names (fmt_string : string) (start : int) : string li
   with Caml.Not_found -> []
 
 
-let check_printf_args_ok tenv (node : Procdesc.Node.t) (instr : Sil.instr)
-    (proc_name : Typ.Procname.t) (proc_desc : Procdesc.t) summary : unit =
+let check_printf_args_ok tenv (node : Procdesc.Node.t) (instr : Sil.instr) (proc_name : Procname.t)
+    (proc_desc : Procdesc.t) err_log : unit =
   (* Check if format string lines up with arguments *)
   let rec check_type_names instr_loc n_arg instr_proc_name fmt_type_names arg_type_names =
-    let instr_name = Typ.Procname.to_simplified_string instr_proc_name in
+    let instr_name = Procname.to_simplified_string instr_proc_name in
     let instr_line = Location.to_string instr_loc in
     match (fmt_type_names, arg_type_names) with
     | ft :: fs, gt :: gs ->
@@ -111,7 +111,8 @@ let check_printf_args_ok tenv (node : Procdesc.Node.t) (instr : Sil.instr)
               "%s at line %s: parameter %d is expected to be of type %s but %s was given."
               instr_name instr_line n_arg (default_format_type_name ft) gt
           in
-          Reporting.log_error summary ~loc:instr_loc IssueType.checkers_printf_args description
+          Reporting.log_issue proc_desc err_log ~loc:instr_loc PrintfArgs
+            IssueType.checkers_printf_args description
         else check_type_names instr_loc (n_arg + 1) instr_proc_name fs gs
     | [], [] ->
         ()
@@ -120,14 +121,15 @@ let check_printf_args_ok tenv (node : Procdesc.Node.t) (instr : Sil.instr)
           Printf.sprintf "format string arguments don't mach provided arguments in %s at line %s"
             instr_name instr_line
         in
-        Reporting.log_error summary ~loc:instr_loc IssueType.checkers_printf_args description
+        Reporting.log_issue proc_desc err_log ~loc:instr_loc PrintfArgs
+          IssueType.checkers_printf_args description
   in
   (* Get the array ivar for a given nvar *)
   let array_ivar instrs nvar =
     match nvar with
     | Exp.Var nid ->
         Instrs.find_map instrs ~f:(function
-          | Sil.Load (id, Exp.Lvar iv, _, _) when Ident.equal id nid ->
+          | Sil.Load {id; e= Exp.Lvar iv} when Ident.equal id nid ->
               Some iv
           | _ ->
               None )
@@ -156,22 +158,20 @@ let check_printf_args_ok tenv (node : Procdesc.Node.t) (instr : Sil.instr)
               vararg_ivar_type_names
         | None ->
             if not (Reporting.is_suppressed tenv proc_desc IssueType.checkers_printf_args) then
-              Reporting.log_warning summary ~loc:cl IssueType.checkers_printf_args
-                "Format string must be string literal"
+              Reporting.log_issue proc_desc err_log ~loc:cl PrintfArgs
+                IssueType.checkers_printf_args "Format string must be string literal"
       with e ->
         L.internal_error "%s Exception when analyzing %s: %s@."
-          IssueType.checkers_printf_args.unique_id
-          (Typ.Procname.to_string proc_name)
-          (Exn.to_string e) )
+          IssueType.checkers_printf_args.unique_id (Procname.to_string proc_name) (Exn.to_string e)
+      )
     | None ->
         () )
   | _ ->
       ()
 
 
-let callback_printf_args {Callbacks.tenv; proc_desc; summary} : Summary.t =
+let checker {IntraproceduralAnalysis.proc_desc; tenv; err_log} =
   let proc_name = Procdesc.get_proc_name proc_desc in
   Procdesc.iter_instrs
-    (fun n i -> check_printf_args_ok tenv n i proc_name proc_desc summary)
-    proc_desc ;
-  summary
+    (fun n i -> check_printf_args_ok tenv n i proc_name proc_desc err_log)
+    proc_desc

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -72,7 +72,7 @@ void cast_signed_to_unsigned2_Bad_FN() {
   }
 }
 
-void cast_float_to_int_Good() {
+void cast_float_to_int_Good_FP() {
   char arr[10];
   float x = 15.0;
   int32_t y = (int32_t)x;
@@ -81,11 +81,33 @@ void cast_float_to_int_Good() {
   }
 }
 
-void cast_float_to_int_Bad_FN() {
+void cast_float_to_int_Bad() {
   char arr[10];
   float x = 15000000000.0;
   int32_t y = (int32_t)x; // y is -2147483648.
   if (y < 10) {
     arr[y] = 0;
   }
+}
+
+/*
+  Testing that the analyzer doesn't run infinitely on these cases
+*/
+typedef struct s_cast {
+  char* data;
+  struct s_cast* another;
+  char* data2;
+} t_cast;
+
+char cast_field_to_struct(struct s_cast* s, int i0) {
+  for (int i = i0; i > 0; i--) {
+    s = (struct s_cast*)(&s->data);
+  }
+  s = s->another;
+  for (int i = i0; i > 0; i--) {
+    s = (struct s_cast*)(&s->data);
+    s = (struct s_cast*)((unsigned char*)(void*)(s->data2) -
+                         offsetof(s->data2));
+  }
+  return *s->data;
 }

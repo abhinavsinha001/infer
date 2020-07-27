@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -13,9 +13,9 @@ let parse_clang_procedure procedure kinds index =
   try Some (QualifiedCppName.Match.of_fuzzy_qual_names [procedure], kinds, index)
   with QualifiedCppName.ParseError _ ->
     (* Java and Clang sources/sinks live in the same inferconfig entry. If we try to parse a Java
-         procedure that happens to be an invalid Clang qualified name (e.g., MyClass.<init>),
-         parsing will crash. In the future, we can avoid this by requiring JSON source/sink
-         specifications to indicate the language *)
+       procedure that happens to be an invalid Clang qualified name (e.g., MyClass.<init>),
+       parsing will crash. In the future, we can avoid this by requiring JSON source/sink
+       specifications to indicate the language *)
     None
 
 
@@ -67,19 +67,19 @@ module SourceKind = struct
   let get ~caller_pname:_ pname actuals tenv =
     let return = None in
     match pname with
-    | Typ.Procname.ObjC_Cpp cpp_name -> (
-        let qualified_pname = Typ.Procname.get_qualifiers pname in
+    | Procname.ObjC_Cpp cpp_name -> (
+        let qualified_pname = Procname.get_qualifiers pname in
         match
           ( QualifiedCppName.to_list
-              (Typ.Name.unqualified_name (Typ.Procname.ObjC_Cpp.get_class_type_name cpp_name))
-          , Typ.Procname.get_method pname )
+              (Typ.Name.unqualified_name (Procname.ObjC_Cpp.get_class_type_name cpp_name))
+          , Procname.get_method pname )
         with
         | ( ["std"; ("basic_istream" | "basic_iostream")]
           , ("getline" | "read" | "readsome" | "operator>>") ) ->
             [(ReadFile, Some 1)]
         | _ ->
             get_external_source qualified_pname )
-    | Typ.Procname.C _ when Typ.Procname.equal pname BuiltinDecl.__global_access -> (
+    | Procname.C _ when Procname.equal pname BuiltinDecl.__global_access -> (
         (* is this var a command line flag created by the popular C++ gflags library for creating
            command-line flags (https://github.com/gflags/gflags)? *)
         let is_gflag access_path =
@@ -109,16 +109,16 @@ module SourceKind = struct
             else []
         | _ ->
             [] )
-    | Typ.Procname.C _ -> (
-      match Typ.Procname.to_string pname with
+    | Procname.C _ -> (
+      match Procname.to_string pname with
       | "getenv" ->
           [(EnvironmentVariable, return)]
       | _ ->
-          get_external_source (Typ.Procname.get_qualifiers pname) )
-    | Typ.Procname.Block _ ->
+          get_external_source (Procname.get_qualifiers pname) )
+    | Procname.Block _ ->
         []
     | pname ->
-        L.(die InternalError) "Non-C++ procname %a in C++ analysis" Typ.Procname.pp pname
+        L.(die InternalError) "Non-C++ procname %a in C++ analysis" Procname.pp pname
 
 
   let get_tainted_formals pdesc tenv =
@@ -128,8 +128,8 @@ module SourceKind = struct
       let overrides_service_method pname tenv =
         PatternMatch.override_exists
           (function
-            | Typ.Procname.ObjC_Cpp cpp_pname ->
-                let class_name = Typ.Procname.ObjC_Cpp.get_class_name cpp_pname in
+            | Procname.ObjC_Cpp cpp_pname ->
+                let class_name = Procname.ObjC_Cpp.get_class_name cpp_pname in
                 let res =
                   String.is_suffix ~suffix:"SvIf" class_name
                   || String.is_suffix ~suffix:"SvAsyncIf" class_name
@@ -156,11 +156,11 @@ module SourceKind = struct
           (Procdesc.get_formals pdesc)
       in
       match Procdesc.get_proc_name pdesc with
-      | Typ.Procname.ObjC_Cpp cpp_pname as pname ->
+      | Procname.ObjC_Cpp cpp_pname as pname ->
           let qualified_pname =
             F.sprintf "%s::%s"
-              (Typ.Procname.ObjC_Cpp.get_class_name cpp_pname)
-              (Typ.Procname.get_method pname)
+              (Procname.ObjC_Cpp.get_class_name cpp_pname)
+              (Procname.get_method pname)
           in
           if QuandaryConfig.is_endpoint qualified_pname then
             taint_all_but_this_and_return ~make_source:(fun name desc ->
@@ -265,7 +265,7 @@ module SinkKind = struct
 
   (* return Some(sink kinds) if [procedure_name] is in the list of externally specified sinks *)
   let get_external_sink pname actuals =
-    let qualified_pname = Typ.Procname.get_qualifiers pname in
+    let qualified_pname = Procname.get_qualifiers pname in
     List.find_map
       ~f:(fun (qualifiers, kinds, index) ->
         if QualifiedCppName.Match.match_qualifiers qualifiers qualified_pname then
@@ -288,7 +288,7 @@ module SinkKind = struct
          report on accesses to maps etc., but also want to recognize custom vectors like fbvector
          rather than overfitting to std::vector *)
       let typename =
-        Typ.Procname.get_qualifiers pname |> QualifiedCppName.strip_template_args
+        Procname.get_qualifiers pname |> QualifiedCppName.strip_template_args
         |> QualifiedCppName.to_qual_string |> String.lowercase
       in
       String.is_substring ~substring:"vec" typename
@@ -296,11 +296,11 @@ module SinkKind = struct
       || String.is_substring ~substring:"string" typename
     in
     match pname with
-    | Typ.Procname.ObjC_Cpp cpp_name -> (
+    | Procname.ObjC_Cpp cpp_name -> (
       match
         ( QualifiedCppName.to_list
-            (Typ.Name.unqualified_name (Typ.Procname.ObjC_Cpp.get_class_type_name cpp_name))
-        , Typ.Procname.get_method pname )
+            (Typ.Name.unqualified_name (Procname.ObjC_Cpp.get_class_type_name cpp_name))
+        , Procname.get_method pname )
       with
       | ( ["std"; ("basic_fstream" | "basic_ifstream" | "basic_ofstream")]
         , ("basic_fstream" | "basic_ifstream" | "basic_ofstream" | "open") ) ->
@@ -309,17 +309,16 @@ module SinkKind = struct
           taint_nth 1 [BufferAccess] actuals
       | _ ->
           get_external_sink pname actuals )
-    | Typ.Procname.C _
-      when String.is_substring ~substring:"SetCommandLineOption" (Typ.Procname.to_string pname) ->
+    | Procname.C _
+      when String.is_substring ~substring:"SetCommandLineOption" (Procname.to_string pname) ->
         taint_nth 1 [EnvironmentChange] actuals
-    | Typ.Procname.C _
-      when Config.developer_mode && Typ.Procname.equal pname BuiltinDecl.__array_access ->
+    | Procname.C _ when Config.developer_mode && Procname.equal pname BuiltinDecl.__array_access ->
         taint_all [BufferAccess] actuals
-    | Typ.Procname.C _ when Typ.Procname.equal pname BuiltinDecl.__set_array_length ->
+    | Procname.C _ when Procname.equal pname BuiltinDecl.__set_array_length ->
         (* called when creating a stack-allocated array *)
         taint_nth 1 [StackAllocation] actuals
-    | Typ.Procname.C _ -> (
-      match Typ.Procname.to_string pname with
+    | Procname.C _ -> (
+      match Procname.to_string pname with
       | "creat" | "fopen" | "freopen" | "open" ->
           taint_nth 0 [CreateFile] actuals
       | "curl_easy_setopt" -> (
@@ -365,10 +364,10 @@ module SinkKind = struct
           taint_nth 2 [BufferAccess] actuals
       | _ ->
           get_external_sink pname actuals )
-    | Typ.Procname.Block _ ->
+    | Procname.Block _ ->
         []
     | pname ->
-        L.(die InternalError) "Non-C++ procname %a in C++ analysis" Typ.Procname.pp pname
+        L.(die InternalError) "Non-C++ procname %a in C++ analysis" Procname.pp pname
 
 
   let pp fmt kind =
@@ -429,7 +428,7 @@ module CppSanitizer = struct
 
 
   let get pname _tenv =
-    let qualified_pname = Typ.Procname.get_qualifiers pname in
+    let qualified_pname = Procname.get_qualifiers pname in
     List.find_map
       ~f:(fun (qualifiers, kind) ->
         if QualifiedCppName.Match.match_qualifiers qualifiers qualified_pname then Some kind
@@ -448,7 +447,7 @@ module CppSanitizer = struct
         F.pp_print_string fmt "All"
 end
 
-include Trace.Make (struct
+include TaintTrace.Make (struct
   module Source = CppSource
   module Sink = CppSink
   module Sanitizer = CppSanitizer
@@ -480,23 +479,16 @@ include Trace.Make (struct
         Option.some_if
           (is_injection_possible ~typ Sanitizer.EscapeURL sanitizers)
           IssueType.untrusted_url_risk
-    | ( (CommandLineFlag (_, typ) | Endpoint (_, typ) | UserControlledEndpoint (_, typ))
-      , SQLInjection ) ->
+    | (CommandLineFlag (_, typ) | Endpoint (_, typ) | UserControlledEndpoint (_, typ)), SQLInjection
+      ->
         if is_injection_possible ~typ Sanitizer.EscapeSQL sanitizers then
-          (* SQL injection if the caller of the endpoint doesn't sanitize on its end *)
           Some IssueType.sql_injection_risk
-        else
-          (* no injection risk, but still user-controlled *)
-          Some IssueType.user_controlled_sql_risk
+        else Some IssueType.user_controlled_sql_risk
     | (Endpoint _ | UserControlledEndpoint _), (SQLRead | SQLWrite) ->
-        (* no injection risk, but still user-controlled *)
         Some IssueType.user_controlled_sql_risk
     | (Endpoint _ | UserControlledEndpoint _), EnvironmentChange ->
-        (* user-controlled environment mutation *)
         Some IssueType.untrusted_environment_change_risk
-    | (CommandLineFlag (_, typ) | Endpoint (_, typ) | UserControlledEndpoint (_, typ)), ShellExec
-      ->
-        (* code injection if the caller of the endpoint doesn't sanitize on its end *)
+    | (CommandLineFlag (_, typ) | Endpoint (_, typ) | UserControlledEndpoint (_, typ)), ShellExec ->
         Option.some_if
           (is_injection_possible ~typ Sanitizer.EscapeShell sanitizers)
           IssueType.shell_injection_risk
@@ -507,10 +499,8 @@ include Trace.Make (struct
         | ReadFile
         | Other )
       , BufferAccess ) ->
-        (* untrusted data of any kind flowing to buffer *)
         Some IssueType.untrusted_buffer_access
     | (EnvironmentVariable | ReadFile | Other), ShellExec ->
-        (* environment var, or file data flowing to shell *)
         Option.some_if
           (is_injection_possible Sanitizer.EscapeShell sanitizers)
           IssueType.shell_injection
@@ -520,7 +510,6 @@ include Trace.Make (struct
           (is_injection_possible Sanitizer.EscapeSQL sanitizers)
           IssueType.sql_injection
     | Other, URL ->
-        (* untrusted flag, environment var, or file data flowing to URL *)
         Option.some_if
           (is_injection_possible Sanitizer.EscapeURL sanitizers)
           IssueType.untrusted_url_risk
@@ -531,7 +520,6 @@ include Trace.Make (struct
         | ReadFile
         | Other )
       , HeapAllocation ) ->
-        (* untrusted data of any kind flowing to heap allocation. this can cause crashes or DOS. *)
         Some IssueType.untrusted_heap_allocation
     | ( ( CommandLineFlag _
         | Endpoint _
@@ -540,8 +528,6 @@ include Trace.Make (struct
         | ReadFile
         | Other )
       , StackAllocation ) ->
-        (* untrusted data of any kind flowing to stack buffer allocation. trying to allocate a stack
-           buffer that's too large will cause a stack overflow. *)
         Some IssueType.untrusted_variable_length_array
     | ( (CommandLineFlag _ | EnvironmentVariable | ReadFile)
       , (CreateFile | EnvironmentChange | SQLRead | SQLWrite | URL) ) ->

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -36,15 +36,6 @@ public class ThreadSafeExample {
   public void recursiveBad() {
     f = 44;
     recursiveBad();
-  }
-
-  private void evenOk() {
-    f = 44;
-    oddBad();
-  }
-
-  public void oddBad() {
-    evenOk(); // should report here
   }
 
   // shouldn't report here because it's a private method

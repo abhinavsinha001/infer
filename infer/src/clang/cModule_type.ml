@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,12 +7,15 @@
 
 open! IStd
 
-type block_data = CContext.t * Clang_ast_t.qual_type * Typ.Procname.t * (Pvar.t * Typ.t) list
+type block_data =
+  { captured_vars: (Pvar.t * Typ.t * Pvar.capture_mode) list
+  ; context: CContext.t
+  ; passed_as_noescape_block_to: Procname.t option
+  ; procname: Procname.t
+  ; return_type: Clang_ast_t.qual_type }
 
 type instr_type =
   [`ClangStmt of Clang_ast_t.stmt | `CXXConstructorInit of Clang_ast_t.cxx_ctor_initializer]
-
-type decl_trans_context = [`DeclTraversal | `Translation]
 
 module type CTranslation = sig
   (** Translates instructions: (statements and expressions) from the ast into sil *)
@@ -42,7 +45,7 @@ module type CFrontend = sig
        CFrontend_config.translation_unit_context
     -> Tenv.t
     -> Cfg.t
-    -> decl_trans_context
+    -> CFrontend_config.decl_trans_context
     -> Clang_ast_t.decl
     -> unit
 end

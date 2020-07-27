@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2014-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -30,61 +30,56 @@ end
 (* InstrRefT *)
 module InstrRef : InstrRefT
 
-type origin_descr = string * Location.t option * AnnotatedSignature.t option
-
 (* callee signature *)
-
-type parameter_not_nullable =
-  AnnotatedSignature.annotation
-  * string
-  * (* description *)
-    int
-  * (* parameter number *)
-    Typ.Procname.t
-  * Location.t
-  * (* callee location *)
-    origin_descr
 
 (** Instance of an error *)
 type err_instance =
-  | Condition_redundant of (bool * string option * bool)
-  | Inconsistent_subclass_return_annotation of Typ.Procname.t * Typ.Procname.t
-  | Inconsistent_subclass_parameter_annotation of string * int * Typ.Procname.t * Typ.Procname.t
-  | Field_not_initialized of Typ.Fieldname.t * Typ.Procname.t
-  | Field_not_mutable of Typ.Fieldname.t * origin_descr
-  | Field_annotation_inconsistent of AnnotatedSignature.annotation * Typ.Fieldname.t * origin_descr
-  | Field_over_annotated of Typ.Fieldname.t * Typ.Procname.t
-  | Null_field_access of string option * Typ.Fieldname.t * origin_descr * bool
-  | Call_receiver_annotation_inconsistent of
-      AnnotatedSignature.annotation * string option * Typ.Procname.t * origin_descr
-  | Parameter_annotation_inconsistent of parameter_not_nullable
-  | Return_annotation_inconsistent of AnnotatedSignature.annotation * Typ.Procname.t * origin_descr
-  | Return_over_annotated of Typ.Procname.t
+  | Condition_redundant of
+      {is_always_true: bool; condition_descr: string option; nonnull_origin: TypeOrigin.t}
+  | Inconsistent_subclass of
+      { inheritance_violation: InheritanceRule.violation
+      ; violation_type: InheritanceRule.ReportableViolation.violation_type
+      ; base_proc_name: Procname.t
+      ; overridden_proc_name: Procname.t }
+  | Field_not_initialized of {field_name: Fieldname.t}
+  | Over_annotation of
+      { over_annotated_violation: OverAnnotatedRule.violation
+      ; violation_type: OverAnnotatedRule.violation_type }
+  | Nullable_dereference of
+      { dereference_violation: DereferenceRule.violation
+      ; dereference_location: Location.t
+      ; dereference_type: DereferenceRule.ReportableViolation.dereference_type
+      ; nullable_object_descr: string option
+      ; nullable_object_origin: TypeOrigin.t }
+  | Bad_assignment of
+      { assignment_violation: AssignmentRule.violation
+      ; assignment_location: Location.t
+      ; assignment_type: AssignmentRule.ReportableViolation.assignment_type
+      ; rhs_origin: TypeOrigin.t }
+[@@deriving compare]
+
+val pp_err_instance : Format.formatter -> err_instance -> unit
 
 val node_reset_forall : Procdesc.Node.t -> unit
 
-type st_report_error =
-     Typ.Procname.t
-  -> Procdesc.t
-  -> IssueType.t
-  -> Location.t
-  -> ?field_name:Typ.Fieldname.t option
-  -> ?origin_loc:Location.t option
-  -> ?exception_kind:(IssueType.t -> Localise.error_desc -> exn)
-  -> ?severity:Exceptions.severity
-  -> string
-  -> unit
-
-val report_error :
-     Tenv.t
-  -> st_report_error
+val register_error :
+     IntraproceduralAnalysis.t
   -> (Procdesc.Node.t -> Procdesc.Node.t)
   -> err_instance
+  -> nullsafe_mode:NullsafeMode.t
   -> InstrRef.t option
   -> Location.t
-  -> Procdesc.t
   -> unit
+(** Register the fact that issue happened. Depending on the error and mode, this error might or
+    might not be reported to the user. *)
 
-val report_forall_checks_and_reset : Tenv.t -> st_report_error -> Procdesc.t -> unit
+val report_forall_issues_and_reset :
+  IntraproceduralAnalysis.t -> nullsafe_mode:NullsafeMode.t -> unit
+(** Report registered "forall" issues (if needed), and reset the error table *)
+
+val is_reportable : nullsafe_mode:NullsafeMode.t -> err_instance -> bool
+(** Is a given issue reportable to the user in a given mode? *)
 
 val reset : unit -> unit
+
+val get_errors : unit -> (err_instance * InstrRef.t option) list

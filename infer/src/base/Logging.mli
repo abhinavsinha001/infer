@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -23,14 +23,16 @@ val environment_info : ('a, F.formatter, unit) format -> 'a
 val progress : ('a, F.formatter, unit) format -> 'a
 (** print immediately to standard error unless --quiet is specified *)
 
-val task_progress : f:(unit -> unit) -> (F.formatter -> 'a -> unit) -> 'a -> unit
+val log_task : ('a, F.formatter, unit) format -> 'a
+(** log progress in the log file and on the console unless there is an active task bar *)
+
+val task_progress : f:(unit -> 'a) -> (F.formatter -> 'b -> unit) -> 'b -> 'a
 (** [task_progress ~f pp x] executes [f] and log progress [pp x] in the log file and also on the
     console unless there is an active task bar *)
 
 val result : ('a, F.formatter, unit) format -> 'a
 (** Emit a result to stdout. Use only if the output format is stable and useful enough that it may
-    conceivably get piped to another program, ie, almost never (use [progress] instead otherwise).
-*)
+    conceivably get piped to another program, ie, almost never (use [progress] instead otherwise). *)
 
 val user_error : ('a, F.formatter, unit) format -> 'a
 (** bad input, etc. detected *)
@@ -58,8 +60,8 @@ val debug : debug_kind -> debug_level -> ('a, F.formatter, unit) format -> 'a
 
 val debug_dev : ('a, Format.formatter, unit) format -> 'a
   [@@deprecated
-    "Only use to debug during development. If you want more permanent logging, use \
-     [Logging.debug] instead."]
+    "Only use to debug during development. If you want more permanent logging, use [Logging.debug] \
+     instead."]
   [@@warning "-32"]
 (** For debugging during development. *)
 
@@ -127,7 +129,19 @@ val d_indent : int -> unit
 (** dump an indentation *)
 
 val d_increase_indent : unit -> unit
-(** dump command to increase the indentation level *)
+(** dump command to increase the indentation level. NOTE: most likely, you need [d_with_indent]
+    instead *)
 
 val d_decrease_indent : unit -> unit
-(** dump command to decrease the indentation level *)
+(** dump command to decrease the indentation level NOTE: most likely, you need [d_with_indent]
+    instead. *)
+
+val d_with_indent : ?pp_result:(F.formatter -> 'a -> unit) -> name:string -> (unit -> 'a) -> 'a
+(** Execute arbitrary function (the last argument) with a given [name] so that all logs written
+    inside (if any) are written with indentation.
+
+    [pp_result], if provided, will make the result of a call to be printed as well (useful for cases
+    when there are several places when the function returns).
+
+    NOTE: If you want to use it NOT at the very top level of a function, it is a code smell, and you
+    probably want to split your function into smaller ones. *)

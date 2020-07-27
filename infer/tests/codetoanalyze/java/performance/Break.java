@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -20,7 +20,7 @@ public class Break {
   /* calling break_loop with a negative t should give constant
   cost. Currently, this doesn't work because parameters are removed
   when computing the env size :( */
-  private static int break_constant(int p) {
+  private static int break_constant_FP(int p) {
     return break_loop(p, -1);
   }
 

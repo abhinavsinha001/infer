@@ -1,6 +1,6 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -30,22 +30,16 @@ type t =
         (** Diverging states since the last reset for the node *)
   ; mutable diverging_states_proc: Paths.PathSet.t
         (** Diverging states since the last reset for the procedure *)
-  ; mutable last_instr: Sil.instr option  (** Last instruction seen *)
-  ; mutable last_node: Procdesc.Node.t option  (** Last node seen *)
   ; mutable last_path: (Paths.Path.t * PredSymb.path_pos option) option  (** Last path seen *)
   ; mutable last_prop_tenv_pdesc: (Prop.normal Prop.t * Tenv.t * Procdesc.t) option
         (** Last prop,tenv,pdesc seen *)
-  ; mutable last_session: int  (** Last session seen *)
   ; failure_map: failure_stats NodeHash.t  (** Map visited nodes to failure statistics *) }
 
 let initial () =
   { diverging_states_node= Paths.PathSet.empty
   ; diverging_states_proc= Paths.PathSet.empty
-  ; last_instr= None
-  ; last_node= None
   ; last_path= None
   ; last_prop_tenv_pdesc= None
-  ; last_session= 0
   ; failure_map= NodeHash.create 1 }
 
 
@@ -83,42 +77,26 @@ let get_diverging_states_node () = !gs.diverging_states_node
 
 let get_diverging_states_proc () = !gs.diverging_states_proc
 
-let get_instr () = !gs.last_instr
-
-let get_node_exn () = Option.value_exn !gs.last_node
-
-let get_node () = !gs.last_node
-
-let get_loc_exn () =
-  match !gs.last_instr with
-  | Some instr ->
-      Sil.location_of_instr instr
-  | None ->
-      get_node_exn () |> Procdesc.Node.get_loc
-
-
-let get_loc () =
-  match !gs.last_instr with Some instr -> Some (Sil.location_of_instr instr) | None -> None
-
-
 (** normalize the list of instructions by renaming let-bound ids *)
 let instrs_normalize instrs =
   let bound_ids =
-    let do_instr = function Sil.Load (id, _, _, _) -> Some id | _ -> None in
+    let do_instr = function Sil.Load {id} -> Some id | _ -> None in
     IContainer.rev_filter_map_to_list ~fold:Instrs.fold ~f:do_instr instrs
   in
   let subst =
     let count = ref Int.min_value in
-    let gensym id = incr count ; Ident.set_stamp id !count in
-    Sil.subst_of_list (List.rev_map ~f:(fun id -> (id, Exp.Var (gensym id))) bound_ids)
+    let gensym id =
+      incr count ;
+      Ident.set_stamp id !count
+    in
+    Predicates.subst_of_list (List.rev_map ~f:(fun id -> (id, Exp.Var (gensym id))) bound_ids)
   in
-  let subst_and_add acc instr = Sil.instr_sub subst instr :: acc in
+  let subst_and_add acc instr = Predicates.instr_sub subst instr :: acc in
   Instrs.fold instrs ~init:[] ~f:subst_and_add
 
 
-(** Create a function to find duplicate nodes.
-    A node is a duplicate of another one if they have the same kind and location
-    and normalized (w.r.t. renaming of let - bound ids) list of instructions. *)
+(** Create a function to find duplicate nodes. A node is a duplicate of another one if they have the
+    same kind and location and normalized (w.r.t. renaming of let - bound ids) list of instructions. *)
 let mk_find_duplicate_nodes : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.t =
   let module M = (* map from (loc,kind) *)
   Caml.Map.Make (struct
@@ -156,7 +134,7 @@ let mk_find_duplicate_nodes : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.
         let s = M.find (get_key node) map in
         let node_normalized_instrs = Procdesc.NodeMap.find node s in
         let collect_duplicates node' normalized_instrs' nset =
-          if List.equal ~equal:Sil.equal_instr node_normalized_instrs normalized_instrs' then
+          if List.equal Sil.equal_instr node_normalized_instrs normalized_instrs' then
             Procdesc.NodeSet.add node' nset
           else nset
         in
@@ -167,14 +145,14 @@ let mk_find_duplicate_nodes : Procdesc.t -> Procdesc.Node.t -> Procdesc.NodeSet.
 
 
 let get_inst_update pos =
-  let loc = get_loc_exn () in
-  Sil.inst_update loc pos
+  let loc = AnalysisState.get_loc_exn () in
+  Predicates.inst_update loc pos
 
 
 let get_path () =
   match !gs.last_path with
   | None ->
-      (Paths.Path.start (get_node_exn ()), None)
+      (Paths.Path.start (AnalysisState.get_node_exn ()), None)
   | Some (path, pos_opt) ->
       (path, pos_opt)
 
@@ -186,12 +164,13 @@ let get_loc_trace () : Errlog.loc_trace =
 
 let get_prop_tenv_pdesc () = !gs.last_prop_tenv_pdesc
 
-(** extract the footprint of the prop, and turn it into a normalized precondition using spec variables *)
+(** extract the footprint of the prop, and turn it into a normalized precondition using spec
+    variables *)
 let extract_pre p tenv pdesc abstract_fun =
   let sub =
     let idlist = Prop.free_vars p |> Ident.hashqueue_of_sequence |> Ident.HashQueue.keys in
     let count = ref 0 in
-    Sil.subst_of_list
+    Predicates.subst_of_list
       (List.map
          ~f:(fun id ->
            incr count ;
@@ -204,8 +183,8 @@ let extract_pre p tenv pdesc abstract_fun =
   Prop.normalize tenv (Prop.prop_sub sub pre')
 
 
-(** return the normalized precondition extracted form the last prop seen, if any
-    the abstraction function is a parameter to get around module dependencies *)
+(** return the normalized precondition extracted form the last prop seen, if any the abstraction
+    function is a parameter to get around module dependencies *)
 let get_normalized_pre (abstract_fun : Tenv.t -> Prop.normal Prop.t -> Prop.normal Prop.t) :
     Prop.normal Prop.t option =
   match get_prop_tenv_pdesc () with
@@ -215,17 +194,15 @@ let get_normalized_pre (abstract_fun : Tenv.t -> Prop.normal Prop.t -> Prop.norm
       Some (extract_pre prop tenv pdesc abstract_fun)
 
 
-let get_session () = !gs.last_session
-
 let get_path_pos () =
   let pname =
     match get_prop_tenv_pdesc () with
     | Some (_, _, pdesc) ->
         Procdesc.get_proc_name pdesc
     | None ->
-        Typ.Procname.from_string_c_fun "unknown_procedure"
+        Procname.from_string_c_fun "unknown_procedure"
   in
-  let nid = Procdesc.Node.get_id (get_node_exn ()) in
+  let nid = Procdesc.Node.get_id (AnalysisState.get_node_exn ()) in
   (pname, (nid :> int))
 
 
@@ -244,14 +221,14 @@ let mark_execution_end node =
 
 
 let mark_instr_ok () =
-  let fs = get_failure_stats (get_node_exn ()) in
+  let fs = get_failure_stats (AnalysisState.get_node_exn ()) in
   fs.instr_ok <- fs.instr_ok + 1
 
 
 let mark_instr_fail exn =
-  let loc = get_loc_exn () in
-  let node = get_node_exn () in
-  let session = get_session () in
+  let loc = AnalysisState.get_loc_exn () in
+  let node = AnalysisState.get_node_exn () in
+  let session = AnalysisState.get_session () in
   let loc_trace = get_loc_trace () in
   let fs = get_failure_stats node in
   if is_none fs.first_failure then
@@ -259,38 +236,23 @@ let mark_instr_fail exn =
   fs.instr_fail <- fs.instr_fail + 1
 
 
-type log_issue =
-     Typ.Procname.t
-  -> ?node:Procdesc.Node.t
-  -> ?loc:Location.t
-  -> ?ltr:Errlog.loc_trace
-  -> exn
-  -> unit
+type log_issue = ?node:Procdesc.Node.t -> ?loc:Location.t -> ?ltr:Errlog.loc_trace -> exn -> unit
 
-let process_execution_failures (log_issue : log_issue) pname =
+let process_execution_failures (log_issue : log_issue) =
   let do_failure _ fs =
     (* L.out "Node:%a node_ok:%d node_fail:%d@." Procdesc.Node.pp node fs.node_ok fs.node_fail; *)
     match (fs.node_ok, fs.first_failure) with
     | 0, Some (loc, node, _, loc_trace, exn) when not Config.debug_exceptions ->
         let error = Exceptions.recognize_exception exn in
-        let desc' = Localise.verbatim_desc ("exception: " ^ error.name.IssueType.unique_id) in
+        let desc' = Localise.verbatim_desc ("exception: " ^ error.issue_type.unique_id) in
         let exn' = Exceptions.Analysis_stops (desc', error.ocaml_pos) in
-        log_issue pname ~loc ~node ~ltr:loc_trace exn'
+        log_issue ~loc ~node ~ltr:loc_trace exn'
     | _ ->
         ()
   in
   NodeHash.iter do_failure !gs.failure_map
 
 
-let set_instr (instr : Sil.instr) = !gs.last_instr <- Some instr
-
 let set_path path pos_opt = !gs.last_path <- Some (path, pos_opt)
 
 let set_prop_tenv_pdesc prop tenv pdesc = !gs.last_prop_tenv_pdesc <- Some (prop, tenv, pdesc)
-
-let set_node (node : Procdesc.Node.t) =
-  !gs.last_instr <- None ;
-  !gs.last_node <- Some node
-
-
-let set_session (session : int) = !gs.last_session <- session

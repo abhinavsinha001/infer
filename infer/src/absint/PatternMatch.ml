@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,14 +8,6 @@
 open! IStd
 
 (** Module for Pattern matching. *)
-
-let type_is_object typ =
-  match typ.Typ.desc with
-  | Tptr ({desc= Tstruct name}, _) ->
-      Typ.Name.equal name Typ.Name.Java.java_lang_object
-  | _ ->
-      false
-
 
 (** Holds iff the predicate holds on a supertype of the named type, including the type itself *)
 let rec supertype_exists tenv pred name =
@@ -54,16 +46,35 @@ let implements interface tenv typename =
   supertype_exists tenv is_interface (Typ.Name.Java.from_string typename)
 
 
+let implements_arrays = implements "java.util.Arrays"
+
 let implements_iterator = implements "java.util.Iterator"
 
 let implements_collection = implements "java.util.Collection"
 
+let implements_collections = implements "java.util.Collections"
+
 let implements_list = implements "java.util.List"
 
-let implements_pseudo_collection t s =
-  implements "android.util.SparseArray" t s
-  || implements "android.util.SparseIntArray" t s
-  || implements "com.moblica.common.xmob.utils.IntArrayList" t s
+let implements_xmob_utils class_name = implements ("com.moblica.common.xmob.utils." ^ class_name)
+
+let implements_pseudo_collection =
+  let androidx_class_names =
+    List.map
+      ~f:(fun class_name -> "androidx.collection." ^ class_name)
+      [ "ArrayMap"
+      ; "ArraySet"
+      ; "CircularArray"
+      ; "LongSparseArray"
+      ; "LruCache"
+      ; "SimpleArrayMap"
+      ; "SparseArrayCompat" ]
+  in
+  fun t s ->
+    implements "android.util.SparseArray" t s
+    || implements "android.util.SparseIntArray" t s
+    || implements_xmob_utils "IntArrayList" t s
+    || List.exists ~f:(fun class_name -> implements class_name t s) androidx_class_names
 
 
 let implements_enumeration = implements "java.util.Enumeration"
@@ -72,7 +83,13 @@ let implements_inject class_name = implements ("javax.inject." ^ class_name)
 
 let implements_io class_name = implements ("java.io." ^ class_name)
 
+let implements_nio class_name = implements ("java.nio." ^ class_name)
+
 let implements_map = implements "java.util.Map"
+
+let implements_androidx_map = implements "androidx.collection.SimpleArrayMap"
+
+let implements_set = implements "java.util.Set"
 
 let implements_map_entry = implements "java.util.Map$Entry"
 
@@ -84,10 +101,28 @@ let implements_google class_name = implements ("com.google." ^ class_name)
 
 let implements_android class_name = implements ("android." ^ class_name)
 
+let implements_infer_annotation class_name =
+  implements ("com.facebook.infer.annotation." ^ class_name)
+
+
 let implements_jackson class_name = implements ("com.fasterxml.jackson." ^ class_name)
 
+let implements_org_json class_name = implements ("org.json." ^ class_name)
+
+let implements_app_activity = implements "android.app.Activity"
+
+let implements_app_fragment = implements "androidx.fragment.app.Fragment"
+
+let implements_graphql_story = implements "com.facebook.graphql.model.GraphQLStory"
+
+let implements_psi_element = implements "com.intellij.psi.PsiElement"
+
+let implements_view_group = implements "android.view.ViewGroup"
+
+let implements_view_parent = implements "android.view.ViewParent"
+
 (** The type the method is invoked on *)
-let get_this_type proc_attributes =
+let get_this_type_nonstatic_methods_only proc_attributes =
   match proc_attributes.ProcAttributes.formals with (_, t) :: _ -> Some t | _ -> None
 
 
@@ -99,14 +134,16 @@ let type_get_direct_supertypes tenv (typ : Typ.t) =
       []
 
 
-let type_get_class_name {Typ.desc} =
-  match desc with Typ.Tptr (typ, _) -> Typ.name typ | _ -> None
+let type_get_class_name {Typ.desc} = match desc with Typ.Tptr (typ, _) -> Typ.name typ | _ -> None
+
+let type_name_get_annotation tenv (name : Typ.name) : Annot.Item.t option =
+  match Tenv.lookup tenv name with Some {annots} -> Some annots | None -> None
 
 
 let type_get_annotation tenv (typ : Typ.t) : Annot.Item.t option =
   match typ.desc with
-  | Tptr ({desc= Tstruct name}, _) | Tstruct name -> (
-    match Tenv.lookup tenv name with Some {annots} -> Some annots | None -> None )
+  | Tptr ({desc= Tstruct name}, _) | Tstruct name ->
+      type_name_get_annotation tenv name
   | _ ->
       None
 
@@ -121,12 +158,12 @@ let rec get_type_name {Typ.desc} =
       "_"
 
 
-let get_field_type_name tenv (typ : Typ.t) (fieldname : Typ.Fieldname.t) : string option =
+let get_field_type_name tenv (typ : Typ.t) (fieldname : Fieldname.t) : string option =
   match typ.desc with
   | Tstruct name | Tptr ({desc= Tstruct name}, _) -> (
     match Tenv.lookup tenv name with
     | Some {fields} -> (
-      match List.find ~f:(function fn, _, _ -> Typ.Fieldname.equal fn fieldname) fields with
+      match List.find ~f:(function fn, _, _ -> Fieldname.equal fn fieldname) fields with
       | Some (_, ft, _) ->
           Some (get_type_name ft)
       | None ->
@@ -154,15 +191,14 @@ let get_vararg_type_names tenv (call_node : Procdesc.Node.t) (ivar : Pvar.t) : s
   let initializes_array instrs =
     instrs
     |> Instrs.find_map ~f:(function
-         | Sil.Store (Exp.Lvar iv, _, Exp.Var t2, _) when Pvar.equal ivar iv ->
+         | Sil.Store {e1= Exp.Lvar iv; e2= Exp.Var t2} when Pvar.equal ivar iv ->
              Some t2
          | _ ->
              None )
     |> Option.exists ~f:(fun t2 ->
            Instrs.exists instrs ~f:(function
              | Sil.Call ((t1, _), Exp.Const (Const.Cfun pn), _, _, _) ->
-                 Ident.equal t1 t2
-                 && Typ.Procname.equal pn (Typ.Procname.from_string_c_fun "__new_array")
+                 Ident.equal t1 t2 && Procname.equal pn (Procname.from_string_c_fun "__new_array")
              | _ ->
                  false ) )
   in
@@ -171,7 +207,7 @@ let get_vararg_type_names tenv (call_node : Procdesc.Node.t) (ivar : Pvar.t) : s
     let nvar_type_name nvar =
       instrs
       |> Instrs.find_map ~f:(function
-           | Sil.Load (nv, e, t, _) when Ident.equal nv nvar ->
+           | Sil.Load {id= nv; e; typ= t} when Ident.equal nv nvar ->
                Some (e, t)
            | _ ->
                None )
@@ -184,10 +220,10 @@ let get_vararg_type_names tenv (call_node : Procdesc.Node.t) (ivar : Pvar.t) : s
     let added_nvar array_nvar =
       instrs
       |> Instrs.find_map ~f:(function
-           | Sil.Store (Exp.Lindex (Exp.Var iv, _), _, Exp.Var nvar, _)
+           | Sil.Store {e1= Exp.Lindex (Exp.Var iv, _); e2= Exp.Var nvar}
              when Ident.equal iv array_nvar ->
                Some (nvar_type_name nvar)
-           | Sil.Store (Exp.Lindex (Exp.Var iv, _), _, Exp.Const c, _)
+           | Sil.Store {e1= Exp.Lindex (Exp.Var iv, _); e2= Exp.Const c}
              when Ident.equal iv array_nvar ->
                Some (Some (java_get_const_type_name c))
            | _ ->
@@ -197,7 +233,7 @@ let get_vararg_type_names tenv (call_node : Procdesc.Node.t) (ivar : Pvar.t) : s
     let array_nvar =
       instrs
       |> Instrs.find_map ~f:(function
-           | Sil.Load (nv, Exp.Lvar iv, _, _) when Pvar.equal iv ivar ->
+           | Sil.Load {id= nv; e= Exp.Lvar iv} when Pvar.equal iv ivar ->
                Some nv
            | _ ->
                None )
@@ -223,10 +259,6 @@ let get_vararg_type_names tenv (call_node : Procdesc.Node.t) (ivar : Pvar.t) : s
   type_names [] call_node
 
 
-let is_getter pname_java =
-  Str.string_match (Str.regexp "get*") (Typ.Procname.Java.get_method pname_java) 0
-
-
 let type_is_class typ =
   match typ.Typ.desc with
   | Tptr ({desc= Tstruct _}, _) ->
@@ -246,6 +278,7 @@ let initializer_classes =
     ; "android.app.Fragment"
     ; "android.app.Service"
     ; "android.support.v4.app.Fragment"
+    ; "androidx.fragment.app.Fragment"
     ; "junit.framework.TestCase" ]
 
 
@@ -265,12 +298,12 @@ let type_has_initializer (tenv : Tenv.t) (t : Typ.t) : bool =
 
 (** Check if the method is one of the known initializer methods. *)
 let method_is_initializer (tenv : Tenv.t) (proc_attributes : ProcAttributes.t) : bool =
-  match get_this_type proc_attributes with
+  match get_this_type_nonstatic_methods_only proc_attributes with
   | Some this_type ->
       if type_has_initializer tenv this_type then
         match proc_attributes.ProcAttributes.proc_name with
-        | Typ.Procname.Java pname_java ->
-            let mname = Typ.Procname.Java.get_method pname_java in
+        | Procname.Java pname_java ->
+            let mname = Procname.Java.get_method pname_java in
             List.exists ~f:(String.equal mname) initializer_methods
         | _ ->
             false
@@ -279,27 +312,7 @@ let method_is_initializer (tenv : Tenv.t) (proc_attributes : ProcAttributes.t) :
       false
 
 
-(** Get the vararg values by looking for array assignments to the pvar. *)
-let java_get_vararg_values node pvar idenv =
-  let values_of_instr acc = function
-    | Sil.Store (Exp.Lindex (array_exp, _), _, content_exp, _)
-      when Exp.equal (Exp.Lvar pvar) (Idenv.expand_expr idenv array_exp) ->
-        (* Each vararg argument is an assignment to a pvar denoting an array of objects. *)
-        content_exp :: acc
-    | _ ->
-        acc
-  in
-  let values_of_node acc n =
-    Procdesc.Node.get_instrs n |> Instrs.fold ~f:values_of_instr ~init:acc
-  in
-  match Errdesc.find_program_variable_assignment node pvar with
-  | Some (node', _) ->
-      Procdesc.fold_slope_range node' node ~f:values_of_node ~init:[]
-  | None ->
-      []
-
-
-let proc_calls resolve_attributes pdesc filter : (Typ.Procname.t * ProcAttributes.t) list =
+let proc_calls resolve_attributes pdesc filter : (Procname.t * ProcAttributes.t) list =
   let res = ref [] in
   let do_instruction _ instr =
     match instr with
@@ -317,21 +330,32 @@ let proc_calls resolve_attributes pdesc filter : (Typ.Procname.t * ProcAttribute
     Instrs.iter ~f:(do_instruction node) instrs
   in
   let nodes = Procdesc.get_nodes pdesc in
-  List.iter ~f:do_node nodes ; List.rev !res
+  List.iter ~f:do_node nodes ;
+  List.rev !res
+
+
+let has_same_signature proc_name =
+  let method_name = Procname.get_method proc_name in
+  let params = Procname.get_parameters proc_name in
+  Staged.stage (fun other_pname ->
+      let other_method_name = Procname.get_method other_pname in
+      let other_params = Procname.get_parameters other_pname in
+      (not (Procname.is_constructor other_pname))
+      && String.equal other_method_name method_name
+      (* Check that parameter types match exactly (no subtyping or what not). *)
+      &&
+      match List.for_all2 params other_params ~f:Procname.Parameter.equal with
+      | List.Or_unequal_lengths.Ok res ->
+          res
+      | List.Or_unequal_lengths.Unequal_lengths ->
+          false )
 
 
 let override_find ?(check_current_type = true) f tenv proc_name =
-  let method_name = Typ.Procname.get_method proc_name in
-  let parameter_length = List.length (Typ.Procname.get_parameters proc_name) in
-  let is_override pname =
-    (not (Typ.Procname.is_constructor pname))
-    && String.equal (Typ.Procname.get_method pname) method_name
-    (* TODO (T32979782): match parameter types, taking subtyping and type erasure into account *)
-    && Int.equal (List.length (Typ.Procname.get_parameters pname)) parameter_length
-  in
+  let is_override = Staged.unstage (has_same_signature proc_name) in
   let rec find_super_type super_class_name =
     Tenv.lookup tenv super_class_name
-    |> Option.bind ~f:(fun {Typ.Struct.methods; supers} ->
+    |> Option.bind ~f:(fun {Struct.methods; supers} ->
            match List.find ~f:(fun pname -> is_override pname && f pname) methods with
            | None ->
                List.find_map ~f:find_super_type supers
@@ -344,11 +368,10 @@ let override_find ?(check_current_type = true) f tenv proc_name =
   if check_current_type && f proc_name then Some proc_name
   else
     match proc_name with
-    | Typ.Procname.Java proc_name_java ->
-        find_super_type
-          (Typ.Name.Java.from_string (Typ.Procname.Java.get_class_name proc_name_java))
-    | Typ.Procname.ObjC_Cpp proc_name_cpp ->
-        find_super_type (Typ.Procname.ObjC_Cpp.get_class_type_name proc_name_cpp)
+    | Procname.Java proc_name_java ->
+        find_super_type (Procname.Java.get_class_type_name proc_name_java)
+    | Procname.ObjC_Cpp proc_name_cpp ->
+        find_super_type (Procname.ObjC_Cpp.get_class_type_name proc_name_cpp)
     | _ ->
         None
 
@@ -360,7 +383,12 @@ let override_exists ?(check_current_type = true) f tenv proc_name =
 (* Only java supported at the moment *)
 
 let override_iter f tenv proc_name =
-  ignore (override_exists (fun pname -> f pname ; false) tenv proc_name)
+  ignore
+    (override_exists
+       (fun pname ->
+         f pname ;
+         false )
+       tenv proc_name)
 
 
 let lookup_attributes tenv proc_name =
@@ -381,44 +409,41 @@ let lookup_attributes tenv proc_name =
 let get_fields_nullified procdesc =
   (* walk through the instructions and look for instance fields that are assigned to null *)
   let collect_nullified_flds (nullified_flds, this_ids) _ = function
-    | Sil.Store (Exp.Lfield (Exp.Var lhs, fld, _), _, rhs, _)
+    | Sil.Store {e1= Exp.Lfield (Exp.Var lhs, fld, _); e2= rhs}
       when Exp.is_null_literal rhs && Ident.Set.mem lhs this_ids ->
-        (Typ.Fieldname.Set.add fld nullified_flds, this_ids)
-    | Sil.Load (id, rhs, _, _) when Exp.is_this rhs ->
+        (Fieldname.Set.add fld nullified_flds, this_ids)
+    | Sil.Load {id; e= rhs} when Exp.is_this rhs ->
         (nullified_flds, Ident.Set.add id this_ids)
     | _ ->
         (nullified_flds, this_ids)
   in
   let nullified_flds, _ =
     Procdesc.fold_instrs procdesc ~f:collect_nullified_flds
-      ~init:(Typ.Fieldname.Set.empty, Ident.Set.empty)
+      ~init:(Fieldname.Set.empty, Ident.Set.empty)
   in
   nullified_flds
-
-
-(** Checks if the exception is an unchecked exception *)
-let is_runtime_exception tenv typename =
-  is_subtype_of_str tenv typename "java.lang.RuntimeException"
 
 
 (** Checks if the class name is a Java exception *)
 let is_throwable tenv typename = is_subtype_of_str tenv typename "java.lang.Throwable"
 
-(** tests whether any class attributes (e.g., @ThreadSafe) pass check of first argument,
-    including for supertypes*)
+let is_java_enum tenv typename = is_subtype_of_str tenv typename "java.lang.Enum"
+
+(** tests whether any class attributes (e.g., [@ThreadSafe]) pass check of first argument, including
+    for supertypes*)
 let check_class_attributes check tenv = function
-  | Typ.Procname.Java java_pname ->
-      let check_class_annots _ {Typ.Struct.annots} = check annots in
-      supertype_exists tenv check_class_annots (Typ.Procname.Java.get_class_type_name java_pname)
+  | Procname.Java java_pname ->
+      let check_class_annots _ {Struct.annots} = check annots in
+      supertype_exists tenv check_class_annots (Procname.Java.get_class_type_name java_pname)
   | _ ->
       false
 
 
-(** tests whether any class attributes (e.g., @ThreadSafe) pass check of first argument,
-    for the current class only*)
+(** tests whether any class attributes (e.g., [@ThreadSafe]) pass check of first argument, for the
+    current class only*)
 let check_current_class_attributes check tenv = function
-  | Typ.Procname.Java java_pname -> (
-    match Tenv.lookup tenv (Typ.Procname.Java.get_class_type_name java_pname) with
+  | Procname.Java java_pname -> (
+    match Tenv.lookup tenv (Procname.Java.get_class_type_name java_pname) with
     | Some struct_typ ->
         check struct_typ.annots
     | _ ->
@@ -427,7 +452,7 @@ let check_current_class_attributes check tenv = function
       false
 
 
-(** find superclasss with attributes (e.g., @ThreadSafe), including current class*)
+(** find superclasss with attributes (e.g., [@ThreadSafe]), including current class*)
 let rec find_superclasses_with_attributes check tenv tname =
   match Tenv.lookup tenv tname with
   | Some struct_typ ->
@@ -437,3 +462,49 @@ let rec find_superclasses_with_attributes check tenv tname =
       if check struct_typ.annots then tname :: result_from_supers else result_from_supers
   | _ ->
       []
+
+
+let is_override_of_java_lang_object_equals curr_pname =
+  let is_only_param_of_object_type = function
+    | [Procname.Parameter.JavaParameter param_type]
+      when JavaSplitName.equal param_type JavaSplitName.java_lang_object ->
+        true
+    | _ ->
+        false
+  in
+  String.equal (Procname.get_method curr_pname) "equals"
+  && is_only_param_of_object_type (Procname.get_parameters curr_pname)
+
+
+module ObjectiveC = struct
+  let is_core_graphics_create_or_copy _ procname =
+    String.is_prefix ~prefix:"CG" procname
+    && ( String.is_substring ~substring:"Create" procname
+       || String.is_substring ~substring:"Copy" procname )
+
+
+  let is_core_foundation_create_or_copy _ procname =
+    String.is_prefix ~prefix:"CF" procname
+    && ( String.is_substring ~substring:"Create" procname
+       || String.is_substring ~substring:"Copy" procname )
+
+
+  let is_core_graphics_release _ procname =
+    String.is_prefix ~prefix:"CG" procname && String.is_suffix ~suffix:"Release" procname
+
+
+  let is_modelled_as_alloc _ procname =
+    match Config.pulse_model_alloc_pattern with
+    | Some regex ->
+        Str.string_match regex procname 0
+    | None ->
+        false
+
+
+  let is_modelled_as_release _ procname =
+    match Config.pulse_model_release_pattern with
+    | Some regex ->
+        Str.string_match regex procname 0
+    | None ->
+        false
+end

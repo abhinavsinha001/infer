@@ -1,39 +1,42 @@
 /*
- * Copyright (c) 2019-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 %{
   open !IStd
-
-  let is_guard i = Char.is_lowercase i.[0]
-
-  let normalize_id i = String.uncapitalize i
-
-  let value_pattern_of_id i =
-    assert (String.length i > 0) ;
-    let j = normalize_id i in
-    if is_guard i then ToplAst.EqualToRegister j else ToplAst.SaveInRegister j
 %}
 
 %token <int> INDENT (* The lexer uses this token only internally. *)
-%token <string> CONSTANT
-%token <string> ID
+%token <int> INTEGER
+%token <string> LID
 %token <string> STRING
+%token <string> UID
+%token AND
 %token ARROW
-%token ASGN
+%token ARROWARROW
 %token COLON
+%token COLONEQ
 %token COMMA
 %token EOF
+%token EQ
+%token GE
+%token GT
 %token LC
+%token LE
 %token LP
+%token LT
 %token MESSAGE
+%token NE
+%token NONDET
 %token PREFIX
 %token PROPERTY
 %token RC
 %token RP
+%token SEMI
 %token STAR
+%token WHEN
 
 %start <ToplAst.t list> properties
 
@@ -42,35 +45,69 @@
 properties: ps=one_property* EOF { ps }
 
 one_property:
-    PROPERTY name=ID LC message=message? prefixes=prefix* transitions=transition* RC
-    { ToplAst.{name; message; prefixes; transitions} }
+    PROPERTY name=identifier LC message=message? prefixes=prefix* nondet=nondet
+      transitions=transition* RC
+    { ToplAst.{name; message; prefixes; nondet; transitions} }
 
 message: MESSAGE s=STRING { s }
 
-prefix: PREFIX c=CONSTANT { c }
+prefix: PREFIX s=STRING { s }
+
+nondet: NONDET LP ns=state* RP { ns }
 
 transition:
-    source=ID ARROW target=ID COLON label=label
+    source=state ARROW target=state COLON label=label
     { ToplAst.{source; target; label} }
 
-label:
-    return=value_pattern ASGN c=call_pattern
-    { let procedure_name, arguments = c in ToplAst.{return; procedure_name; arguments} }
-  | c=call_pattern
-    { let procedure_name, arguments = c in ToplAst.{return=Ignore; procedure_name; arguments} }
+state: i=identifier { i }
 
-call_pattern: p=procedure_pattern a=arguments_pattern? { (p, a) }
+label:
+    STAR { None }
+  | procedure_name=procedure_pattern arguments=arguments_pattern?
+    condition=condition? action=action?
+    { let condition = Option.value ~default:[] condition in
+      let action = Option.value ~default:[] action in
+      Some ToplAst.{ arguments; condition; action; procedure_name } }
+
+condition: WHEN ps=condition_expression { ps }
+
+condition_expression: p=predicate ps=and_predicate* { p :: ps }
+
+predicate:
+    v1=value ov2=predop_value?
+    { let f (o, v2) = ToplAst.Binop (o, v1, v2) in
+      Option.value_map ~default:(ToplAst.Value v1) ~f ov2 }
+
+value:
+    id=LID { ToplAst.Register id }
+  | id=UID { ToplAst.Binding id }
+  | x=INTEGER { ToplAst.Constant (Exp.Const (Const.Cint (IntLit.of_int x))) }
+  | x=STRING  { ToplAst.Constant (Exp.Const (Const.Cstr x)) }
+
+predop_value: o=predop v=value { (o, v) }
+
+predop:
+    EQ { ToplAst.OpEq }
+  | NE { ToplAst.OpNe }
+  | LT { ToplAst.OpLt }
+  | LE { ToplAst.OpLe }
+  | GT { ToplAst.OpGt }
+  | GE { ToplAst.OpGe }
+
+and_predicate: AND p=predicate { p }
 
 procedure_pattern:
-    i=ID { i }
-  | c=CONSTANT { c }
-  | STAR { ".*" }
+    i=identifier { i }
+  | s=STRING { s }
 
-arguments_pattern: LP a=separated_list(COMMA, value_pattern) RP { a }
+arguments_pattern: LP a=separated_list(COMMA, UID) RP { a }
 
-value_pattern:
-    i=ID { value_pattern_of_id i }
-  | c=CONSTANT { ToplAst.EqualToConstant c }
-  | STAR { ToplAst.Ignore }
+action:
+    ARROWARROW a=separated_nonempty_list(SEMI, assignment) { a }
+
+assignment:
+    r=LID COLONEQ v=UID { (r, v) }
+
+identifier: i=LID { i } | i=UID { i }
 
 %%

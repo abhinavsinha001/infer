@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -31,7 +31,8 @@ module Make (Set : Set) : sig
   val find : t -> Set.elt -> Repr.t
 
   val union : t -> Set.elt -> Set.elt -> (Set.elt * Set.elt) option
-  (** [union t e1 e2] returns [None] if [e1] and [e2] were already in the same set, [Some (a, b)] if [a] is merged into [b] (were [(a, b)] is either [(e1, e2)] or [(e2, e1)]). *)
+  (** [union t e1 e2] returns [None] if [e1] and [e2] were already in the same set, [Some (a, b)] if
+      [a] is merged into [b] (were [(a, b)] is either [(e1, e2)] or [(e2, e1)]). *)
 
   val find_create_set : t -> Repr.t -> Set.t
 

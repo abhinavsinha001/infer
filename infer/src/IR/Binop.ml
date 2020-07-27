@@ -1,12 +1,13 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *)
 
 (** The Smallfoot Intermediate Language: Binary Operators *)
+
 open! IStd
 
 type ikind_option_for_binop = Typ.ikind option
@@ -25,8 +26,8 @@ type t =
   | Mod  (** % *)
   | Shiftlt  (** shift left *)
   | Shiftrt  (** shift right *)
-  | Lt  (** <  (arithmetic comparison) *)
-  | Gt  (** >  (arithmetic comparison) *)
+  | Lt  (** < (arithmetic comparison) *)
+  | Gt  (** > (arithmetic comparison) *)
   | Le  (** <= (arithmetic comparison) *)
   | Ge  (** >= (arithmetic comparison) *)
   | Eq  (** == (arithmetic comparison) *)
@@ -40,16 +41,61 @@ type t =
 
 let equal = [%compare.equal: t]
 
-(** This function returns true if the operation is injective
-    wrt. each argument: op(e,-) and op(-, e) is injective for all e.
-    The return value false means "don't know". *)
+(** This function returns true if the operation is injective wrt. each argument: op(e,-) and op(-,
+    e) is injective for all e. The return value false means "don't know". *)
 let injective = function PlusA _ | PlusPI | MinusA _ | MinusPI | MinusPP -> true | _ -> false
 
-(** This function returns true if 0 is the right unit of [binop].
-    The return value false means "don't know". *)
+(** This function returns true if 0 is the right unit of [binop]. The return value false means
+    "don't know". *)
 let is_zero_runit = function PlusA _ | PlusPI | MinusA _ | MinusPI | MinusPP -> true | _ -> false
 
-let text = function
+let symmetric = function
+  | (PlusA _ | PlusPI | Mult _ | Eq | Ne | BAnd | BXor | BOr | LAnd | LOr) as symmetric_op ->
+      Some symmetric_op
+  | MinusA _ | MinusPP | MinusPI | Div | Mod | Shiftlt | Shiftrt ->
+      None
+  | Lt ->
+      Some Gt
+  | Gt ->
+      Some Lt
+  | Le ->
+      Some Ge
+  | Ge ->
+      Some Le
+
+
+let negate = function
+  | Eq ->
+      Some Ne
+  | Ne ->
+      Some Eq
+  | Lt ->
+      Some Ge
+  | Gt ->
+      Some Le
+  | Le ->
+      Some Gt
+  | Ge ->
+      Some Lt
+  | LAnd
+  | LOr
+  | PlusA _
+  | PlusPI
+  | Mult _
+  | BAnd
+  | BXor
+  | BOr
+  | MinusA _
+  | MinusPP
+  | MinusPI
+  | Div
+  | Mod
+  | Shiftlt
+  | Shiftrt ->
+      None
+
+
+let to_string = function
   | PlusA _ ->
       "+"
   | PlusPI ->
@@ -92,7 +138,6 @@ let text = function
       "||"
 
 
-(** Pretty print a binary operator. *)
 let str pe binop =
   match pe.Pp.kind with
   | HTML -> (
@@ -110,6 +155,6 @@ let str pe binop =
     | Shiftrt ->
         " &gt;&gt; "
     | _ ->
-        text binop )
+        to_string binop )
   | _ ->
-      text binop
+      to_string binop

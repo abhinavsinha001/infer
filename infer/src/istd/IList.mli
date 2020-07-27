@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2015-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -33,7 +33,7 @@ val split_last_rev : 'a list -> ('a * 'a list) option
 
 val append_no_duplicates : cmp:('a -> 'a -> int) -> ('a list -> 'a list -> 'a list) Staged.t
 (** [append_no_duplicates list1 list2], assuming that list1 and list2 have no duplicates on their
-    own, it computes list1 @ (filtered list2), so it keeps the order of both lists and has no
+    own, it computes [list1 @ (filtered list2)], so it keeps the order of both lists and has no
     duplicates. *)
 
 val merge_dedup : 'a list -> 'a list -> compare:('a -> 'a -> int) -> 'a list
@@ -45,6 +45,13 @@ val opt_cons : 'a option -> 'a list -> 'a list
 (** [opt_cons None l] returns [l]. [opt_cons (Some x) l] returns [x :: l]*)
 
 val remove_first : 'a list -> f:('a -> bool) -> 'a list option
+
+val force_until_first_some : 'a option lazy_t list -> 'a option
+(** [force_until_first_some xs] forces the computation of each element of [xs] and returns the first
+    that matches (Some _); or, if no such element exists, it returns None. *)
+
+val eval_until_first_some : (unit -> 'a option) list -> 'a option
+(** given a list of functions taking unit, evaluate and return the first one to return [Some x] *)
 
 val pp_print_list :
      max:int
@@ -60,3 +67,9 @@ val fold2_result :
   -> 'a list
   -> 'b list
   -> ('acc, 'err) result Base.List.Or_unequal_lengths.t
+
+val move_last_to_first : 'a list -> 'a list
+
+val traverse_opt : 'a list -> f:('a -> 'b option) -> 'b list option
+(** Applies [f] to the elements of the list and returns [None] if any application results in [None]
+    otherwise returns [Some list']. *)

@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,12 +7,12 @@
 
 open! IStd
 
-(** Methods for creating a procdesc from a method or function declaration
-    and for resolving a method call and finding the right callee *)
+(** Methods for creating a procdesc from a method or function declaration and for resolving a method
+    call and finding the right callee *)
 
 module L = Logging
 
-(** When the methoc call is MCStatic, means that it is a class method.  When it is MCVirtual, it
+(** When the methoc call is MCStatic, means that it is a class method. When it is MCVirtual, it
     means that it is an instance method and that the method to be called will be determined at
     runtime. If it is MCNoVirtual it means that it is an instance method but that the method to be
     called will be determined at compile time *)
@@ -29,7 +29,7 @@ let method_signature_of_pointer tenv pointer =
         Some ms
     | None ->
         None
-  with CFrontend_config.Invalid_declaration -> None
+  with CFrontend_errors.Invalid_declaration -> None
 
 
 let get_method_name_from_clang tenv ms_opt =
@@ -41,7 +41,7 @@ let get_method_name_from_clang tenv ms_opt =
         match ObjcCategory_decl.get_base_class_name_from_category decl with
         | Some class_typename ->
             let procname = ms.CMethodSignature.name in
-            let new_procname = Typ.Procname.replace_class procname class_typename in
+            let new_procname = Procname.replace_class procname class_typename in
             Some new_procname
         | None ->
             Some ms.CMethodSignature.name )
@@ -82,8 +82,8 @@ let get_class_name_method_call_from_clang tenv obj_c_message_expr_info =
     match method_signature_of_pointer tenv pointer with
     | Some ms -> (
       match ms.CMethodSignature.name with
-      | Typ.Procname.ObjC_Cpp objc_cpp ->
-          Some (Typ.Procname.ObjC_Cpp.get_class_type_name objc_cpp)
+      | Procname.ObjC_Cpp objc_cpp ->
+          Some (Procname.ObjC_Cpp.get_class_type_name objc_cpp)
       | _ ->
           None )
     | None ->
@@ -112,43 +112,28 @@ let get_class_name_method_call_from_receiver_kind context obj_c_message_expr_inf
 
 let get_objc_method_data obj_c_message_expr_info =
   let selector = obj_c_message_expr_info.Clang_ast_t.omei_selector in
-  let pointer = obj_c_message_expr_info.Clang_ast_t.omei_decl_pointer in
   match obj_c_message_expr_info.Clang_ast_t.omei_receiver_kind with
   | `Instance ->
-      (selector, pointer, MCVirtual)
+      (selector, MCVirtual)
   | `SuperInstance ->
-      (selector, pointer, MCNoVirtual)
+      (selector, MCNoVirtual)
   | `Class _ | `SuperClass ->
-      (selector, pointer, MCStatic)
+      (selector, MCStatic)
 
 
-let sil_func_attributes_of_attributes attrs =
-  let rec do_translation acc al =
-    match al with
-    | [] ->
-        List.rev acc
-    | Clang_ast_t.SentinelAttr attribute_info :: tl ->
-        let sentinel, null_pos =
-          match attribute_info.Clang_ast_t.ai_parameters with
-          | [a; b] ->
-              (int_of_string a, int_of_string b)
-          | _ ->
-              assert false
-        in
-        do_translation (PredSymb.FA_sentinel (sentinel, null_pos) :: acc) tl
-    | _ :: tl ->
-        do_translation acc tl
-  in
-  do_translation [] attrs
-
-
-let should_create_procdesc cfg procname defined set_objc_accessor_attr =
-  match Typ.Procname.Hash.find cfg procname with
+let should_create_procdesc ?(captured_vars = []) cfg procname ~defined ~set_objc_accessor_attr =
+  match Procname.Hash.find cfg procname with
   | previous_procdesc ->
       let is_defined_previous = Procdesc.is_defined previous_procdesc in
       if (defined || set_objc_accessor_attr) && not is_defined_previous then (
-        Typ.Procname.Hash.remove cfg procname ;
+        Procname.Hash.remove cfg procname ;
         true )
+      else if is_defined_previous && not (List.is_empty captured_vars) then (
+        let new_attributes =
+          {(Procdesc.get_attributes previous_procdesc) with captured= captured_vars}
+        in
+        Procdesc.set_attributes previous_procdesc new_attributes ;
+        false )
       else false
   | exception Caml.Not_found ->
       true
@@ -173,7 +158,7 @@ let get_objc_property_accessor tenv ms =
   match CAst_utils.get_decl_opt ms.CMethodSignature.pointer_to_property_opt with
   | Some (ObjCPropertyDecl (_, _, obj_c_property_decl_info)) -> (
       let ivar_decl_ref = obj_c_property_decl_info.Clang_ast_t.opdi_ivar_decl in
-      match CAst_utils.get_decl_opt_with_decl_ref ivar_decl_ref with
+      match CAst_utils.get_decl_opt_with_decl_ref_opt ivar_decl_ref with
       | Some (ObjCIvarDecl (_, name_decl_info, _, _, _)) -> (
           let class_tname =
             Typ.Name.Objc.from_qual_name
@@ -184,7 +169,7 @@ let get_objc_property_accessor tenv ms =
           match Tenv.lookup tenv class_tname with
           | Some {fields} -> (
               let field_opt =
-                List.find ~f:(fun (name, _, _) -> Typ.Fieldname.equal name field_name) fields
+                List.find ~f:(fun (name, _, _) -> Fieldname.equal name field_name) fields
               in
               match field_opt with
               | Some field when CMethodSignature.is_getter ms ->
@@ -201,15 +186,20 @@ let get_objc_property_accessor tenv ms =
       None
 
 
+let find_sentinel_attribute attrs =
+  List.find_map attrs ~f:(function
+    | `SentinelAttr (_attr_info, {Clang_ast_t.sai_sentinel= sentinel; sai_null_pos= null_pos}) ->
+        Some (sentinel, null_pos)
+    | _ ->
+        None )
+
+
 (** Creates a procedure description. *)
-let create_local_procdesc ?(set_objc_accessor_attr = false) trans_unit_ctx cfg tenv ms fbody
-    captured =
+let create_local_procdesc ?(set_objc_accessor_attr = false) ?(update_lambda_captured = false)
+    trans_unit_ctx cfg tenv ms fbody captured =
   let defined = not (List.is_empty fbody) in
   let proc_name = ms.CMethodSignature.name in
-  let pname = Typ.Procname.to_string proc_name in
-  let attributes = sil_func_attributes_of_attributes ms.CMethodSignature.attributes in
   let clang_method_kind = ms.CMethodSignature.method_kind in
-  let is_cpp_nothrow = ms.CMethodSignature.is_cpp_nothrow in
   let access =
     match ms.CMethodSignature.access with
     | `None ->
@@ -220,6 +210,9 @@ let create_local_procdesc ?(set_objc_accessor_attr = false) trans_unit_ctx cfg t
         PredSymb.Protected
     | `Public ->
         PredSymb.Protected
+  in
+  let captured_mangled =
+    List.map ~f:(fun (var, t, mode) -> (Pvar.get_name var, t, mode)) captured
   in
   let create_new_procdesc () =
     let all_params = Option.to_list ms.CMethodSignature.class_param @ ms.CMethodSignature.params in
@@ -232,14 +225,18 @@ let create_local_procdesc ?(set_objc_accessor_attr = false) trans_unit_ctx cfg t
     let formals =
       List.map ~f:(fun ({name; typ} : CMethodSignature.param_type) -> (name, typ)) all_params
     in
-    let captured_mangled = List.map ~f:(fun (var, t) -> (Pvar.get_name var, t)) captured in
-    (* Captured variables for blocks are treated as parameters *)
-    let formals = captured_mangled @ formals in
+    (* Captured variables for blocks are treated as parameters
+       Captured variables will not be added to formals for lambdas' `operator()` as procdesc for
+       `operator()` is created before captured variables are translated
+    *)
+    let captured_as_formals = List.map ~f:(fun (var, t, _) -> (var, t)) captured_mangled in
+    let formals = captured_as_formals @ formals in
     let const_formals =
-      get_const_params_indices ~shift:(List.length captured_mangled) all_params
+      get_const_params_indices ~shift:(List.length captured_as_formals) all_params
     in
     let source_range = ms.CMethodSignature.loc in
-    L.(debug Capture Verbose) "@\nCreating a new procdesc for function: '%s'@\n@." pname ;
+    L.(debug Capture Verbose)
+      "@\nCreating a new procdesc for function: '%a'@\n@." Procname.pp proc_name ;
     L.(debug Capture Verbose) "@\nms = %a@\n@." CMethodSignature.pp ms ;
     let loc_start =
       CLocation.location_of_source_range trans_unit_ctx.CFrontend_config.source_file source_range
@@ -261,11 +258,12 @@ let create_local_procdesc ?(set_objc_accessor_attr = false) trans_unit_ctx cfg t
         ; const_formals
         ; has_added_return_param
         ; access
-        ; func_attributes= attributes
         ; is_defined= defined
-        ; is_cpp_noexcept_method= is_cpp_nothrow
-        ; is_model= Config.models_mode
+        ; is_biabduction_model= Config.biabduction_models_mode
+        ; passed_as_noescape_block_to= ms.CMethodSignature.passed_as_noescape_block_to
+        ; is_no_return= ms.CMethodSignature.is_no_return
         ; is_variadic= ms.CMethodSignature.is_variadic
+        ; sentinel_attr= find_sentinel_attribute ms.CMethodSignature.attributes
         ; loc= loc_start
         ; clang_method_kind
         ; objc_accessor= objc_property_accessor
@@ -280,20 +278,22 @@ let create_local_procdesc ?(set_objc_accessor_attr = false) trans_unit_ctx cfg t
       Procdesc.set_start_node procdesc start_node ;
       Procdesc.set_exit_node procdesc exit_node )
   in
-  if should_create_procdesc cfg proc_name defined set_objc_accessor_attr then (
-    create_new_procdesc () ; true )
+  let captured_vars = if update_lambda_captured then captured_mangled else [] in
+  if should_create_procdesc cfg proc_name ~defined ~set_objc_accessor_attr ~captured_vars then (
+    create_new_procdesc () ;
+    true )
   else false
 
 
 (** Create a procdesc for objc methods whose signature cannot be found. *)
 let create_external_procdesc trans_unit_ctx cfg proc_name clang_method_kind type_opt =
-  if not (Typ.Procname.Hash.mem cfg proc_name) then
+  if not (Procname.Hash.mem cfg proc_name) then
     let ret_type, formals =
       match type_opt with
       | Some (ret_type, arg_types) ->
           (ret_type, List.map ~f:(fun typ -> (Mangled.from_string "x", typ)) arg_types)
       | None ->
-          (Typ.mk Typ.Tvoid, [])
+          (Typ.void, [])
     in
     let proc_attributes =
       { (ProcAttributes.default trans_unit_ctx.CFrontend_config.source_file proc_name) with
@@ -304,13 +304,14 @@ let create_external_procdesc trans_unit_ctx cfg proc_name clang_method_kind type
     ignore (Cfg.create_proc_desc cfg proc_attributes)
 
 
-let create_procdesc_with_pointer context pointer class_name_opt name =
+let create_procdesc_with_pointer ?(captured_vars = []) context pointer class_name_opt name =
   let open CContext in
   match method_signature_of_pointer context.tenv pointer with
   | Some callee_ms ->
       ignore
         (create_local_procdesc context.translation_unit_context context.cfg context.tenv callee_ms
-           [] []) ;
+           [] captured_vars
+           ~update_lambda_captured:(not (List.is_empty captured_vars))) ;
       callee_ms.CMethodSignature.name
   | None ->
       let callee_name, method_kind =
@@ -327,13 +328,13 @@ let create_procdesc_with_pointer context pointer class_name_opt name =
       callee_name
 
 
-let get_procname_from_cpp_lambda context dec =
+let get_procname_from_cpp_lambda context dec captured_vars =
   match dec with
   | Clang_ast_t.CXXRecordDecl (_, _, _, _, _, _, _, cxx_rdi) -> (
     match cxx_rdi.xrdi_lambda_call_operator with
     | Some dr ->
         let name_info, decl_ptr, _ = CAst_utils.get_info_from_decl_ref dr in
-        create_procdesc_with_pointer context decl_ptr None name_info.ni_name
+        create_procdesc_with_pointer context decl_ptr None name_info.ni_name ~captured_vars
     | _ ->
         assert false )
   | _ ->

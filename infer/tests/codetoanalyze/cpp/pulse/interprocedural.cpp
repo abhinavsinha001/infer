@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -93,4 +93,21 @@ struct Y* may_return_invalid_ptr_ok() {
 void feed_invalid_into_access_bad() {
   struct Y* y = may_return_invalid_ptr_ok();
   call_store(y);
+}
+
+void invalidate_and_set_to_null(struct X** x_ptr) {
+  delete (*x_ptr);
+  *x_ptr = nullptr;
+}
+
+void access_to_invalidated_alias_bad(struct X* x, struct X* y) {
+  y = x;
+  invalidate_and_set_to_null(&x);
+  wraps_read(*y);
+}
+
+void access_to_invalidated_alias2_bad(struct X* x, struct X* y) {
+  y = x;
+  invalidate_and_set_to_null(&y);
+  wraps_read(*x);
 }

@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -31,7 +31,7 @@ module Make (Set : Set) = struct
 
   module Repr : sig
     (* Sort-of abstracting away the fact that a representative is just an element itself.
-      This ensures that the [Sets] hashtable is accessed with representative only. *)
+       This ensures that the [Sets] hashtable is accessed with representative only. *)
 
     type t = private Set.elt
 
@@ -83,7 +83,8 @@ module Make (Set : Set) = struct
           set
       | None ->
           let set = Set.create (r :> Set.elt) in
-          H.replace t r set ; set
+          H.replace t r set ;
+          set
 
 
     let fold = H.fold
@@ -91,15 +92,13 @@ module Make (Set : Set) = struct
     let remove_now t r = H.remove t r
   end
 
-  (**
-    Data-structure for disjoint sets.
-    [reprs] is the mapping element -> representative
-    [sets] is the mapping representative -> set
+  (** Data-structure for disjoint sets. [reprs] is the mapping element -> representative [sets] is
+      the mapping representative -> set
 
-    It implements path-compression and union by size, hence find and union are amortized O(1)-ish.
+      It implements path-compression and union by size, hence find and union are amortized O(1)-ish.
 
-    [nb_iterators] and [to_remove] are used to defer removing elements to avoid iterator invalidation during fold.
-  *)
+      [nb_iterators] and [to_remove] are used to defer removing elements to avoid iterator
+      invalidation during fold. *)
   type t = {reprs: Reprs.t; sets: Sets.t; mutable nb_iterators: int; mutable to_remove: Repr.t list}
 
   let create () = {reprs= Reprs.create (); sets= Sets.create (); nb_iterators= 0; to_remove= []}
@@ -148,7 +147,8 @@ module Make (Set : Set) = struct
     t.nb_iterators <- t.nb_iterators + 1 ;
     match IContainer.filter ~fold:Sets.fold ~filter:(is_still_a_repr t) t.sets ~init ~f with
     | result ->
-        after_fold t ; result
+        after_fold t ;
+        result
     | exception e ->
         (* Ensures [nb_iterators] is correct *)
         IExn.reraise_after ~f:(fun () -> after_fold t) e

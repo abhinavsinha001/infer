@@ -1,14 +1,19 @@
 /*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
 package codetoanalyze.java.performance;
 
+import android.app.Activity;
+import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
+
 public class Loops {
 
-  static int do_while_independent_of_p(int p) {
+  static int do_while_independent_of_p_constant(int p) {
     int a = 0;
     do {
       if (p == 15) {
@@ -20,8 +25,8 @@ public class Loops {
     return 0;
   }
 
-  /* can't handle nested loops yet, but control vars of both loops must
-  be {a, b} */
+  /* can't handle this type of nested loops properly, but control vars
+  of both loops must be {a, b} */
   static void nested_do_while_FP(int p) {
     int a = 10;
     int b = 0;
@@ -36,7 +41,7 @@ public class Loops {
     } while (a < 20);
   }
 
-  static void dumb0(long[] a, int length) {
+  static void dumb_linear(long[] a, int length) {
     for (int i = 1; i < length; i++) {
       if (a[i] < a[i - 1]) {
         a[i - 1] = 0;
@@ -46,7 +51,7 @@ public class Loops {
     }
   }
 
-  static void dumbSort(long[] a, long[] b, int length) {
+  static void dumbSort_quadratic(long[] a, long[] b, int length) {
     for (int i = length - 1; i >= 0; --i) {
       for (int j = 0; j < i; ++j) {
         if (a[j] * b[j + 1] > a[j + 1] * b[j]) {
@@ -66,7 +71,7 @@ public class Loops {
     public float[] f;
   }
 
-  static boolean similar(C[] x, C[] y) {
+  static boolean similar_linear(C[] x, C[] y) {
     if (x == null || y == null || x.length != y.length) {
       return false;
     }
@@ -78,16 +83,16 @@ public class Loops {
     return true;
   }
 
-  static void linear(int x) {
+  static void loop_linear(int x) {
     for (int i = 0; i < x; i++) {}
   }
 
-  static void unboundedSymbol() {
+  static void unboundedSymbol_FP() {
     int infinite = 9;
     for (int i = 0; i < 999; i++) {
       infinite *= infinite;
     }
-    linear(infinite);
+    loop_linear(infinite);
   }
 
   void string_length_linear(String s) {
@@ -104,6 +109,52 @@ public class Loops {
     // in [0,1]. It should be p instead.
     while (s.equals(p)) {
       p = p.concat("0");
+    }
+  }
+
+  void charsequence_length_linear(CharSequence seq) {
+    for (int i = 0; i < seq.length(); i++) {}
+  }
+
+  void modeled_range_linear(FileChannel fc, ByteBuffer bb) throws IOException {
+    int i;
+    int offset = 0;
+    do {
+      int numBytesRead = fc.read(bb, offset);
+      if (numBytesRead == -1) {
+        break;
+      }
+      i = bb.getInt();
+      offset += 8;
+    } while (i != 0);
+  }
+
+  class MyLinkedList {
+    MyLinkedList next;
+
+    MyLinkedList getNext() {
+      return next;
+    }
+  }
+
+  void length_of_linked_list_simple_linear(MyLinkedList p) {
+    while (p != null) {
+      p = p.getNext();
+    }
+  }
+
+  void length_of_linked_list_linear_FP(MyLinkedList p) {
+    int n = 0;
+    while (p != null) {
+      n++;
+      p = p.getNext();
+    }
+    loop_linear(n);
+  }
+
+  void linked_list_model_linear(Activity p) {
+    while (p != null) {
+      p = p.getParent();
     }
   }
 }

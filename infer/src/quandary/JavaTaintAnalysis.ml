@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -40,18 +40,16 @@ include TaintAnalysis.Make (struct
           false
     in
     match pname with
-    | Typ.Procname.Java java_pname -> (
-        let is_static = Typ.Procname.Java.is_static java_pname in
+    | Procname.Java java_pname -> (
+        let is_static = Procname.Java.is_static java_pname in
         match
-          ( Typ.Procname.Java.get_class_name java_pname
-          , Typ.Procname.Java.get_method java_pname
-          , ret_typ )
+          (Procname.Java.get_class_name java_pname, Procname.Java.get_method java_pname, ret_typ)
         with
         | "android.content.Intent", ("putExtra" | "putExtras"), _ ->
             (* don't care about tainted extras. instead. we'll check that result of getExtra is
-                   always used safely *)
+               always used safely *)
             []
-        | _ when Typ.Procname.is_constructor pname ->
+        | _ when Procname.is_constructor pname ->
             [TaintSpec.Propagate_to_receiver]
         | _, _, {Typ.desc= Tvoid | Tint _ | Tfloat _} when not is_static ->
             (* for instance methods with a non-Object return value, propagate the taint to the
@@ -63,8 +61,8 @@ include TaintAnalysis.Make (struct
             when (not is_static) && types_match (get_receiver_typ tenv receiver_exp) classname tenv
             ->
               (* if the receiver and return type are the same, propagate to both. we're
-                         assuming the call is one of the common "builder-style" methods that both
-                         updates and returns the receiver *)
+                 assuming the call is one of the common "builder-style" methods that both
+                 updates and returns the receiver *)
               [TaintSpec.Propagate_to_receiver; TaintSpec.Propagate_to_return]
           | _ ->
               (* receiver doesn't match return type; just propagate to the return type *)
@@ -74,7 +72,7 @@ include TaintAnalysis.Make (struct
     | pname when BuiltinDecl.is_declared pname ->
         []
     | pname ->
-        L.(die InternalError) "Non-Java procname %a in Java analysis" Typ.Procname.pp pname
+        L.(die InternalError) "Non-Java procname %a in Java analysis" Procname.pp pname
 
 
   let get_model _ _ _ _ _ = None
@@ -82,7 +80,7 @@ include TaintAnalysis.Make (struct
   let is_taintable_type typ =
     match typ.Typ.desc with
     | Typ.Tptr ({desc= Tstruct (JavaClass typename)}, _) | Tstruct (JavaClass typename) -> (
-      match Mangled.to_string_full typename with
+      match JavaClassName.to_string typename with
       | "android.content.Intent" | "android.net.Uri" | "java.lang.String" | "java.net.URI" ->
           true
       | _ ->

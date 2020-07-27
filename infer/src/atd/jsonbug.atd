@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -20,9 +20,24 @@ type loc = {
   enum: int;
 }
 
+type nullsafe_mode = [Default | LocalTrustAll | LocalTrustSome | LocalTrustNone | Strict]
+
+type nullsafe_meta_issue_info = {
+  num_issues: int;
+  curr_nullsafe_mode: nullsafe_mode;
+  can_be_promoted_to: nullsafe_mode nullable (* If present, it implies that the class is not only free of issues, but the mode can be promoted to a stricter one *)
+}
+
+type nullsafe_extra = {
+  class_name: string;
+  package: string nullable;
+  ?meta_issue_info: nullsafe_meta_issue_info option (* Should be present if the issue is "nullsafe meta issue" *)
+}
+
 type extra = {
   ?cost_polynomial : string option;
-  ?cost_degree : int option
+  ?cost_degree : int option;
+  ?nullsafe_extra : nullsafe_extra option
 }
 
 type jsonbug = {
@@ -44,16 +59,13 @@ type jsonbug = {
   bug_type_hum: string;
   ?linters_def_file: string option;
   ?traceview_id: int option;
-  censored_reason : string;
+  ?censored_reason : string option;
   ?access : string option;
   ?extras : extra option;
 }
 
 type report = jsonbug list
 
-type json_trace = {
-  trace : json_trace_item list;
-}
 
 type hum_info = {
   hum_polynomial : string;
@@ -61,13 +73,23 @@ type hum_info = {
   big_o : string;
 }
 
+
+type cost_info = {
+  polynomial_version : int;
+  polynomial : string;
+  ?degree : int option;
+  hum : hum_info;
+  trace : json_trace_item list;
+}
+
+
 type cost_item = {
   hash : string;
   loc : loc;
   procedure_name : string;
   procedure_id : string;
-  polynomial : string;
-  hum : hum_info;
+  is_on_ui_thread : bool;
+  exec_cost : cost_info;
 }
 
 type costs_report = cost_item list

@@ -1,4 +1,4 @@
-# Copyright (c) 2018-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -6,7 +6,7 @@
 ROOT_DIR = ../../..
 include $(ROOT_DIR)/Makefile.config
 
-INFER_BUILD_DIR = ../_build/default
+INFER_BUILD_DIR = ../../_build/default
 
 default: llvm_sil
 

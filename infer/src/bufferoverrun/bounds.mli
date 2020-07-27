@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -10,6 +10,10 @@ module F = Format
 
 module Bound : sig
   type t
+
+  val mk_MultB : Z.t * t * t -> t
+  (** It makes a bound of [Bound.MultB], which represents a multiplication of two bounds. For
+      example, [MultB (1, x, y)] represents [1 + x × y]. *)
 
   type eval_sym = t Symb.Symbol.eval
 
@@ -22,6 +26,8 @@ module Bound : sig
   val of_int : int -> t
 
   val of_big_int : Z.t -> t
+
+  val of_foreign_id : int -> t
 
   val minf : t
 
@@ -36,21 +42,25 @@ module Bound : sig
   val pinf : t
 
   val of_normal_path :
-       (unsigned:bool -> Symb.SymbolPath.t -> Symb.Symbol.t)
-    -> unsigned:bool
-    -> Symb.SymbolPath.partial
-    -> t
+    Symb.Symbol.make_t -> unsigned:bool -> ?non_int:bool -> Symb.SymbolPath.partial -> t
 
-  val of_offset_path :
-    (unsigned:bool -> Symb.SymbolPath.t -> Symb.Symbol.t) -> Symb.SymbolPath.partial -> t
+  val of_offset_path : is_void:bool -> Symb.Symbol.make_t -> Symb.SymbolPath.partial -> t
 
-  val of_length_path :
-    (unsigned:bool -> Symb.SymbolPath.t -> Symb.Symbol.t) -> Symb.SymbolPath.partial -> t
+  val of_length_path : is_void:bool -> Symb.Symbol.make_t -> Symb.SymbolPath.partial -> t
 
-  val of_modeled_path :
-    (unsigned:bool -> Symb.SymbolPath.t -> Symb.Symbol.t) -> Symb.SymbolPath.partial -> t
+  val of_modeled_path : is_expensive:bool -> Symb.Symbol.make_t -> Symb.SymbolPath.partial -> t
+
+  val of_minmax_bound_min : t -> t -> t
+
+  val of_minmax_bound_max : t -> t -> t
+
+  val is_offset_path_of : Symb.SymbolPath.partial -> t -> bool
+
+  val is_length_path_of : Symb.SymbolPath.partial -> t -> bool
 
   val is_zero : t -> bool
+
+  val is_infty : t -> bool
 
   val is_not_infty : t -> bool
 
@@ -86,11 +96,11 @@ module Bound : sig
 
   val widen_u_thresholds : thresholds:Z.t list -> t -> t -> t
 
-  val is_const : t -> Z.t sexp_option
+  val get_const : t -> Z.t option
 
-  val plus_l : t -> t -> t
+  val plus_l : weak:bool -> t -> t -> t
 
-  val plus_u : t -> t -> t
+  val plus_u : weak:bool -> t -> t -> t
 
   val mult_const_l : Ints.NonZeroInt.t -> t -> t
 
@@ -98,11 +108,13 @@ module Bound : sig
 
   val neg : t -> t
 
-  val div_const_l : t -> Ints.NonZeroInt.t -> t sexp_option
+  val div_const_l : t -> Ints.NonZeroInt.t -> t option
 
-  val div_const_u : t -> Ints.NonZeroInt.t -> t sexp_option
+  val div_const_u : t -> Ints.NonZeroInt.t -> t option
 
   val get_symbols : t -> Symb.SymbolSet.t
+
+  val has_void_ptr_symb : t -> bool
 
   val are_similar : t -> t -> bool
 
@@ -112,7 +124,16 @@ module Bound : sig
 
   val simplify_bound_ends_from_paths : t -> t
 
-  val is_same_symbol : t -> t -> Symb.SymbolPath.t option
+  val simplify_min_one : t -> t
+
+  val get_same_one_symbol : t -> t -> Symb.SymbolPath.t option
+  (** It returns a symbol [s] when the two bounds are all linear expressions of the symbol [1⋅s]. *)
+
+  val is_same_one_symbol : t -> t -> bool
+  (** It returns [true] when the two bounds are linear expressions of the same one symbol [1⋅s]. *)
+
+  val is_incr_of : Symb.SymbolPath.partial -> t -> bool
+  (** Check if [bound] is [path+1] when called [is_incr_of path bound] *)
 
   val exists_str : f:(string -> bool) -> t -> bool
 end
@@ -123,6 +144,8 @@ module BoundTrace : sig
   val length : t -> int
 
   val make_err_trace : depth:int -> t -> Errlog.loc_trace
+
+  val of_loop : Location.t -> t
 end
 
 type ('c, 's, 't) valclass = Constant of 'c | Symbolic of 's | ValTop of 't
@@ -130,13 +153,23 @@ type ('c, 's, 't) valclass = Constant of 'c | Symbolic of 's | ValTop of 't
 module NonNegativeBound : sig
   type t [@@deriving compare]
 
+  val leq : lhs:t -> rhs:t -> bool
+
+  val join : t -> t -> t
+
+  val widen : prev:t -> next:t -> num_iters:int -> t
+
   val of_loop_bound : Location.t -> Bound.t -> t
 
   val of_modeled_function : string -> Location.t -> Bound.t -> t
 
+  val of_big_int : trace:BoundTrace.t -> Z.t -> t
+
   val pp : hum:bool -> Format.formatter -> t -> unit
 
   val make_err_trace : t -> string * Errlog.loc_trace
+
+  val mask_min_max_constant : t -> t
 
   val zero : Location.t -> t
 
@@ -147,9 +180,11 @@ module NonNegativeBound : sig
   val classify : t -> (Ints.NonNegativeInt.t, t, BoundTrace.t) valclass
 
   val subst :
-       Typ.Procname.t
+       Procname.t
     -> Location.t
     -> t
     -> Bound.eval_sym
     -> (Ints.NonNegativeInt.t, t, BoundTrace.t) valclass
+
+  val split_mult : t -> (t * t) option
 end

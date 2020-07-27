@@ -1,49 +1,30 @@
 (*
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *)
 
 open! IStd
-module F = Format
 
 (** Module that contains constants and global state used in the frontend *)
 
 type clang_lang = C | CPP | ObjC | ObjCPP [@@deriving compare]
 
-let string_of_clang_lang (lang : clang_lang) : string =
-  match lang with C -> "C" | CPP -> "CPP" | ObjC -> "ObjC" | ObjCPP -> "ObjCPP"
-
-
 let equal_clang_lang = [%compare.equal: clang_lang]
-
-type exception_details =
-  { msg: string
-  ; position: Logging.ocaml_pos
-  ; source_range: Clang_ast_t.source_range
-  ; ast_node: string option }
-
-exception Unimplemented of exception_details
-
-let unimplemented position source_range ?ast_node fmt =
-  F.kasprintf (fun msg -> raise (Unimplemented {msg; position; source_range; ast_node})) fmt
-
-
-exception IncorrectAssumption of exception_details
-
-let incorrect_assumption position source_range ?ast_node fmt =
-  F.kasprintf (fun msg -> raise (IncorrectAssumption {msg; position; source_range; ast_node})) fmt
-
 
 type translation_unit_context =
   {lang: clang_lang; source_file: SourceFile.t; integer_type_widths: Typ.IntegerWidths.t}
 
-exception Invalid_declaration
+type decl_trans_context = [`DeclTraversal | `Translation]
 
 (** Constants *)
 
 let alloc = "alloc"
+
+let arrayWithObjects_count = "arrayWithObjects:count:"
+
+let dealloc = "dealloc"
 
 let assert_fail = "__assert_fail"
 
@@ -66,8 +47,8 @@ let ckcomponentcontroller_cl = "CKComponentController"
 
 (** script to run our own clang *)
 let clang_bin xx =
-  Config.bin_dir ^/ Filename.parent_dir_name ^/ Filename.parent_dir_name
-  ^/ "facebook-clang-plugins" ^/ "clang" ^/ "install" ^/ "bin" ^/ "clang" ^ xx
+  Config.bin_dir ^/ Filename.parent_dir_name ^/ Filename.parent_dir_name ^/ "facebook-clang-plugins"
+  ^/ "clang" ^/ "install" ^/ "bin" ^/ "clang" ^ xx
 
 
 let class_method = "class"
@@ -85,12 +66,6 @@ let handleFailureInMethod = "handleFailureInMethod:object:file:lineNumber:descri
 let id_cl = "id"
 
 let infer = "infer"
-
-let infer_skip_fun = "__infer_skip_function"
-
-let infer_skip_gcc_asm_stmt = "__infer_skip_gcc_asm_stmt"
-
-let infer_generic_selection_expr = "__infer_generic_selection_expr"
 
 let init = "init"
 
@@ -157,6 +132,3 @@ let reset_global_state () =
   sil_types_map := Clang_ast_extend.TypePointerMap.empty ;
   procedures_attempted := 0 ;
   procedures_failed := 0
-
-
-let tableaux_evaluation = false

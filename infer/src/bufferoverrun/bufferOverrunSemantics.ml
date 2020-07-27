@@ -1,7 +1,7 @@
 (*
  * Copyright (c) 2016-present, Programming Research Laboratory (ROPAS)
  *                             Seoul National University, Korea
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -11,13 +11,14 @@ open! IStd
 open AbsLoc
 open! AbstractDomain.Types
 open BufferOverrunDomain
+module BoField = BufferOverrunField
+module L = Logging
+module TraceSet = BufferOverrunTrace.Set
 
 let eval_const : Typ.IntegerWidths.t -> Const.t -> Val.t =
  fun integer_type_widths -> function
   | Const.Cint intlit ->
       Val.of_big_int (IntLit.to_big_int intlit)
-  | Const.Cfloat f ->
-      f |> int_of_float |> Val.of_int
   | Const.Cstr s ->
       Val.of_literal_string integer_type_widths s
   | _ ->
@@ -27,12 +28,11 @@ let eval_const : Typ.IntegerWidths.t -> Const.t -> Val.t =
 let rec must_alias : Exp.t -> Exp.t -> Mem.t -> bool =
  fun e1 e2 m ->
   match (e1, e2) with
-  | Exp.Var x1, Exp.Var x2 -> (
-    match (Mem.find_alias x1 m, Mem.find_alias x2 m) with
-    | Some x1', Some x2' ->
-        AliasTarget.equal x1' x2'
-    | _, _ ->
-        false )
+  | Exp.Var x1, Exp.Var x2 ->
+      let same_alias rhs1 tgt1 rhs2 tgt2 =
+        KeyRhs.equal rhs1 rhs2 && AliasTarget.equal tgt1 tgt2 && not (Mem.is_rep_multi_loc rhs1 m)
+      in
+      AliasTargets.exists2 same_alias (Mem.find_alias_id x1 m) (Mem.find_alias_id x2 m)
   | Exp.UnOp (uop1, e1', _), Exp.UnOp (uop2, e2', _) ->
       Unop.equal uop1 uop2 && must_alias e1' e2' m
   | Exp.BinOp (bop1, e11, e12), Exp.BinOp (bop2, e21, e22) ->
@@ -46,7 +46,7 @@ let rec must_alias : Exp.t -> Exp.t -> Mem.t -> bool =
   | Exp.Lvar x1, Exp.Lvar x2 ->
       Pvar.equal x1 x2
   | Exp.Lfield (e1, fld1, _), Exp.Lfield (e2, fld2, _) ->
-      must_alias e1 e2 m && Typ.Fieldname.equal fld1 fld2
+      must_alias e1 e2 m && Fieldname.equal fld1 fld2
   | Exp.Lindex (e11, e12), Exp.Lindex (e21, e22) ->
       must_alias e11 e21 m && must_alias e12 e22 m
   | Exp.Sizeof {nbytes= Some nbytes1}, Exp.Sizeof {nbytes= Some nbytes2} ->
@@ -155,8 +155,15 @@ let rec eval : Typ.IntegerWidths.t -> Exp.t -> Mem.t -> Val.t =
         if Mem.is_stack_loc loc mem then Mem.find loc mem else Val.of_loc loc
     | Exp.UnOp (uop, e, _) ->
         eval_unop integer_type_widths uop e mem
-    | Exp.BinOp (bop, e1, e2) ->
-        eval_binop integer_type_widths bop e1 e2 mem
+    | Exp.BinOp (bop, e1, e2) -> (
+        let v = eval_binop integer_type_widths bop e1 e2 mem in
+        match bop with
+        | Binop.(PlusA _ | MinusA _ | MinusPP) ->
+            Val.set_itv_updated_by_addition v
+        | Binop.(Mult _ | Div | Mod | Shiftlt | Shiftrt) ->
+            Val.set_itv_updated_by_multiplication v
+        | Binop.(PlusPI | MinusPI | Lt | Gt | Le | Ge | Eq | Ne | LAnd | LOr | BAnd | BXor | BOr) ->
+            Val.set_itv_updated_by_unknown v )
     | Exp.Const c ->
         eval_const integer_type_widths c
     | Exp.Cast (t, e) ->
@@ -195,7 +202,7 @@ and eval_lindex integer_type_widths array_exp index_exp mem =
              memory sections for each array fields in struct, it finds
              the memory section using the abstract memory, though the
              memory lookup is not required to evaluate the address of
-             x.f[n] in the concrete semantics.  *)
+             x.f[n] in the concrete semantics. *)
           let index_v = eval integer_type_widths index_exp mem in
           Val.plus_pi (Mem.find_set array_locs mem) index_v
     | _ ->
@@ -213,13 +220,7 @@ and eval_lindex integer_type_widths array_exp index_exp mem =
 and eval_unop : Typ.IntegerWidths.t -> Unop.t -> Exp.t -> Mem.t -> Val.t =
  fun integer_type_widths unop e mem ->
   let v = eval integer_type_widths e mem in
-  match unop with
-  | Unop.Neg ->
-      Val.neg v
-  | Unop.BNot ->
-      Val.unknown_bit v
-  | Unop.LNot ->
-      Val.lnot v
+  match unop with Unop.Neg -> Val.neg v | Unop.BNot -> Val.unknown_bit v | Unop.LNot -> Val.lnot v
 
 
 and eval_binop : Typ.IntegerWidths.t -> Binop.t -> Exp.t -> Exp.t -> Mem.t -> Val.t =
@@ -269,10 +270,8 @@ and eval_binop : Typ.IntegerWidths.t -> Binop.t -> Exp.t -> Exp.t -> Mem.t -> Va
       Val.lor_sem v1 v2
 
 
-(**
-  [eval_locs exp mem] is like [eval exp mem |> Val.get_all_locs]
-  but takes some shortcuts to avoid computing useless and/or problematic intermediate values
-*)
+(** [eval_locs exp mem] is like [eval exp mem |> Val.get_all_locs] but takes some shortcuts to avoid
+    computing useless and/or problematic intermediate values *)
 let rec eval_locs : Exp.t -> Mem.t -> PowLoc.t =
  fun exp mem ->
   match exp with
@@ -287,7 +286,7 @@ let rec eval_locs : Exp.t -> Mem.t -> PowLoc.t =
   | BinOp ((Binop.MinusPI | Binop.PlusPI), e, _) | Cast (_, e) ->
       eval_locs e mem
   | BinOp _ | Closure _ | Const _ | Exn _ | Sizeof _ | UnOp _ ->
-      PowLoc.empty
+      PowLoc.bot
   | Lfield (e, fn, _) ->
       eval_locs e mem |> PowLoc.append_field ~fn
   | Lindex (((Lfield _ | Lindex _) as e), _) ->
@@ -304,17 +303,12 @@ let rec eval_locs : Exp.t -> Mem.t -> PowLoc.t =
 let rec eval_arr : Typ.IntegerWidths.t -> Exp.t -> Mem.t -> Val.t =
  fun integer_type_widths exp mem ->
   match exp with
-  | Exp.Var id -> (
-    match Mem.find_alias id mem with
-    | Some (AliasTarget.Simple loc) ->
-        Mem.find loc mem
-    | Some
-        ( AliasTarget.SimplePlusA _
-        | AliasTarget.Empty _
-        | AliasTarget.Fgets _
-        | AliasTarget.Nullity _ )
-    | None ->
-        Val.bot )
+  | Exp.Var id ->
+      let loc =
+        AliasTargets.find_simple_alias (Mem.find_alias_id id mem)
+        |> IOption.value_default_f ~f:(fun () -> Loc.of_id id)
+      in
+      Mem.find loc mem
   | Exp.Lvar pvar ->
       Mem.find (Loc.of_pvar pvar) mem
   | Exp.BinOp (bop, e1, e2) ->
@@ -326,7 +320,7 @@ let rec eval_arr : Typ.IntegerWidths.t -> Exp.t -> Mem.t -> Val.t =
       let locs = eval_locs e mem |> PowLoc.append_field ~fn in
       Mem.find_set locs mem
   | Exp.Lindex (e, _) ->
-      let locs = eval_locs e mem in
+      let locs = eval_arr integer_type_widths e mem |> Val.get_all_locs in
       Mem.find_set locs mem
   | Exp.Const _ | Exp.UnOp _ | Exp.Sizeof _ | Exp.Exn _ | Exp.Closure _ ->
       Val.bot
@@ -373,13 +367,21 @@ end
 
    EvalPOReachability: This is similar to [EvalPOCond], but it returns the bottom location, instead
    of the unknown location, when a location to substitute is not found.  This is used when
-   substituting reachabilities of proof obligations. *)
-type eval_mode = EvalNormal | EvalPOCond | EvalPOReachability
+   substituting reachabilities of proof obligations.
 
-let eval_sympath_modeled_partial ~mode p =
+   EvalCost: This is similar to [EvalNormal], but it is designed to be used in substitutions of
+   the cost results, avoiding precision loss by joining of symbolic values.  Normal join of two
+   different symbolic values, [s1] and [s2], becomes top due to the limitation of our domain.  On
+   the other hand, in this mode, it returns an upperbound [s1+s2] for the case, because the cost
+   values only care about the upperbounds. *)
+type eval_mode = EvalNormal | EvalPOCond | EvalPOReachability | EvalCost
+
+let is_cost_mode = function EvalCost -> true | _ -> false
+
+let eval_sympath_modeled_partial ~mode ~is_expensive p =
   match (mode, p) with
-  | EvalNormal, Symb.SymbolPath.Callsite _ ->
-      Itv.of_modeled_path p |> Val.of_itv
+  | (EvalNormal | EvalCost), BoField.Prim (Symb.SymbolPath.Callsite _) ->
+      Itv.of_modeled_path ~is_expensive p |> Val.of_itv
   | _, _ ->
       (* We only have modeled modeled function calls created in costModels. *)
       assert false
@@ -387,20 +389,26 @@ let eval_sympath_modeled_partial ~mode p =
 
 let rec eval_sympath_partial ~mode params p mem =
   match p with
-  | Symb.SymbolPath.Pvar x -> (
+  | BoField.Prim (Symb.SymbolPath.Pvar x) -> (
     try ParamBindings.find x params
     with Caml.Not_found ->
       L.d_printfln_escaped "Symbol %a is not found in parameters." (Pvar.pp Pp.text) x ;
       Val.Itv.top )
-  | Symb.SymbolPath.Callsite {cs} -> (
+  | BoField.Prim (Symb.SymbolPath.Callsite {ret_typ; cs; obj_path}) -> (
     match mode with
-    | EvalNormal ->
-        L.d_printfln_escaped "Symbol for %a is not expected to be in parameters." Typ.Procname.pp
+    | EvalNormal | EvalCost ->
+        L.d_printfln_escaped "Symbol for %a is not expected to be in parameters." Procname.pp
           (CallSite.pname cs) ;
+        let obj_path =
+          Option.bind obj_path ~f:(fun obj_path ->
+              eval_sympath_partial ~mode params obj_path mem
+              |> Val.get_pow_loc |> PowLoc.min_elt_opt |> Option.bind ~f:Loc.get_path )
+        in
+        let p = Symb.SymbolPath.of_callsite ?obj_path ~ret_typ cs in
         Mem.find (Loc.of_allocsite (Allocsite.make_symbol p)) mem
     | EvalPOCond | EvalPOReachability ->
         Val.Itv.top )
-  | Symb.SymbolPath.Deref _ | Symb.SymbolPath.Field _ ->
+  | BoField.(Prim (Symb.SymbolPath.Deref _) | Field _ | StarField _) ->
       let locs = eval_locpath ~mode params p mem in
       Mem.find_set locs mem
 
@@ -408,21 +416,24 @@ let rec eval_sympath_partial ~mode params p mem =
 and eval_locpath ~mode params p mem =
   let res =
     match p with
-    | Symb.SymbolPath.Pvar _ | Symb.SymbolPath.Callsite _ ->
+    | BoField.Prim (Symb.SymbolPath.Pvar _ | Symb.SymbolPath.Callsite _) ->
         let v = eval_sympath_partial ~mode params p mem in
         Val.get_all_locs v
-    | Symb.SymbolPath.Deref (_, p) ->
+    | BoField.Prim (Symb.SymbolPath.Deref (_, p)) ->
         let v = eval_sympath_partial ~mode params p mem in
         Val.get_all_locs v
-    | Symb.SymbolPath.Field (fn, p) ->
+    | BoField.Field {fn; prefix= p} ->
         let locs = eval_locpath ~mode params p mem in
         PowLoc.append_field ~fn locs
+    | BoField.StarField {last_field= fn; prefix} ->
+        let locs = eval_locpath ~mode params prefix mem in
+        PowLoc.append_star_field ~fn locs
   in
-  if PowLoc.is_empty res then (
+  if PowLoc.is_bot res then (
     match mode with
     | EvalPOReachability ->
         res
-    | EvalNormal | EvalPOCond ->
+    | EvalNormal | EvalPOCond | EvalCost ->
         L.d_printfln_escaped "Location value for %a is not found." Symb.SymbolPath.pp_partial p ;
         PowLoc.unknown )
   else res
@@ -430,29 +441,43 @@ and eval_locpath ~mode params p mem =
 
 let eval_sympath ~mode params sympath mem =
   match sympath with
-  | Symb.SymbolPath.Modeled p ->
-      let v = eval_sympath_modeled_partial ~mode p in
+  | Symb.SymbolPath.Modeled {p; is_expensive} ->
+      let v = eval_sympath_modeled_partial ~mode ~is_expensive p in
       (Val.get_itv v, Val.get_traces v)
   | Symb.SymbolPath.Normal p ->
       let v = eval_sympath_partial ~mode params p mem in
       (Val.get_itv v, Val.get_traces v)
-  | Symb.SymbolPath.Offset p ->
+  | Symb.SymbolPath.Offset {p} ->
       let v = eval_sympath_partial ~mode params p mem in
-      (ArrayBlk.offsetof (Val.get_array_blk v), Val.get_traces v)
-  | Symb.SymbolPath.Length p ->
+      (ArrayBlk.get_offset ~cost_mode:(is_cost_mode mode) (Val.get_array_blk v), Val.get_traces v)
+  | Symb.SymbolPath.Length {p} ->
       let v = eval_sympath_partial ~mode params p mem in
-      (ArrayBlk.sizeof (Val.get_array_blk v), Val.get_traces v)
+      (ArrayBlk.get_size ~cost_mode:(is_cost_mode mode) (Val.get_array_blk v), Val.get_traces v)
 
 
-let mk_eval_sym_trace integer_type_widths callee_formals actual_exps caller_mem =
+let mk_eval_sym_trace ?(is_params_ref = false) integer_type_widths
+    (callee_formals : (Pvar.t * Typ.t) list) (actual_exps : (Exp.t * Typ.t) list) caller_mem =
   let params =
-    let actuals = List.map ~f:(fun (a, _) -> eval integer_type_widths a caller_mem) actual_exps in
+    let actuals =
+      if is_params_ref then
+        match actual_exps with
+        | [] ->
+            []
+        | (this, _) :: actual_exps ->
+            let this_actual = eval integer_type_widths this caller_mem in
+            let actuals =
+              List.map actual_exps ~f:(fun (a, _) ->
+                  Mem.find_set (eval_locs a caller_mem) caller_mem )
+            in
+            this_actual :: actuals
+      else List.map ~f:(fun (a, _) -> eval integer_type_widths a caller_mem) actual_exps
+    in
     ParamBindings.make callee_formals actuals
   in
   let eval_sym ~mode s bound_end =
     let sympath = Symb.Symbol.path s in
     let itv, _ = eval_sympath ~mode params sympath caller_mem in
-    Symb.Symbol.assert_bound_end s bound_end ;
+    Symb.Symbol.check_bound_end s bound_end ;
     Itv.get_bound itv bound_end
   in
   let trace_of_sym s =
@@ -464,23 +489,50 @@ let mk_eval_sym_trace integer_type_widths callee_formals actual_exps caller_mem 
   fun ~mode -> {eval_sym= eval_sym ~mode; trace_of_sym; eval_locpath= eval_locpath ~mode}
 
 
-let mk_eval_sym integer_type_widths callee_pdesc actual_exps caller_mem =
+let mk_eval_sym_mode ~mode integer_type_widths callee_formals actual_exps caller_mem =
   let eval_sym_trace =
-    mk_eval_sym_trace integer_type_widths callee_pdesc actual_exps caller_mem ~mode:EvalNormal
+    mk_eval_sym_trace integer_type_widths callee_formals actual_exps caller_mem ~mode
   in
   eval_sym_trace.eval_sym
 
 
-let get_sym_f integer_type_widths mem e = Val.get_sym (eval integer_type_widths e mem)
+let mk_eval_sym_cost = mk_eval_sym_mode ~mode:EvalCost
 
-let get_offset_sym_f integer_type_widths mem e =
-  Val.get_offset_sym (eval integer_type_widths e mem)
+(* This function evaluates the array length conservatively, which is useful when there are multiple
+   array locations and their lengths are joined to top.  For example, if the [arr_locs] points to
+   two arrays [a] and [b] and if their lengths are [a.length] and [b.length], this function
+   evaluates its length as [\[0, a.length.ub + b.length.ub\]].  *)
+let conservative_array_length ?traces arr_locs mem =
+  let accum_add arr_loc acc = Mem.find arr_loc mem |> Val.array_sizeof |> Itv.plus acc in
+  PowLoc.fold accum_add arr_locs Itv.zero
+  |> Val.of_itv ?traces |> Val.get_range_of_iterator |> Val.set_itv_updated_by_addition
 
 
-let get_size_sym_f integer_type_widths mem e = Val.get_size_sym (eval integer_type_widths e mem)
+let eval_array_locs_length arr_locs mem =
+  if PowLoc.is_bot arr_locs then Val.Itv.top
+  else
+    let arr = Mem.find_set arr_locs mem in
+    let traces = Val.get_traces arr in
+    let length = Val.get_array_blk arr |> ArrayBlk.get_size in
+    match Itv.get_bound length Symb.BoundEnd.UpperBound with
+    | NonBottom b when not (Bounds.Bound.is_pinf b) ->
+        Val.of_itv ~traces length
+    | _ ->
+        conservative_array_length ~traces arr_locs mem
+
+
+let eval_string_len exp mem = Mem.get_c_strlen (eval_locs exp mem) mem
 
 module Prune = struct
   type t = {prune_pairs: PrunePairs.t; mem: Mem.t}
+
+  let collection_length_of_iterator loc mem =
+    let arr_locs =
+      Mem.find loc mem |> Val.get_all_locs
+      |> PowLoc.append_field ~fn:BufferOverrunField.java_collection_internal_array
+    in
+    eval_array_locs_length arr_locs mem
+
 
   let update_mem_in_prune lv v ?(pruning_exp = PruningExp.Unknown) {prune_pairs; mem} =
     let prune_pairs = PrunePairs.add lv (PrunedVal.make v pruning_exp) prune_pairs in
@@ -488,97 +540,209 @@ module Prune = struct
     {prune_pairs; mem}
 
 
+  let prune_has_next ~true_branch iterator ({mem} as astate) =
+    let accum_prune_common ~prune_f loc acc =
+      let length = collection_length_of_iterator iterator mem in
+      let v = Mem.find loc mem in
+      if Val.is_bot length || Val.is_bot v then acc
+      else
+        let v' = prune_f v length in
+        update_mem_in_prune loc v' acc
+    in
+    let accum_pruned loc tgt acc =
+      match tgt with
+      | AliasTarget.IteratorSimple {i} when IntLit.(eq i zero) ->
+          let prune_f = if true_branch then Val.prune_lt else Val.prune_eq in
+          accum_prune_common ~prune_f loc acc
+      | AliasTarget.IteratorOffset {alias_typ; i} when IntLit.(eq i zero) ->
+          let prune_f v length =
+            let f =
+              if true_branch then Val.prune_length_lt
+              else match alias_typ with Eq -> Val.prune_length_eq | Le -> Val.prune_length_le
+            in
+            f v (Val.get_itv length)
+          in
+          accum_prune_common ~prune_f loc acc
+      | _ ->
+          acc
+    in
+    AliasTargets.fold accum_pruned (Mem.find_alias_loc iterator mem) astate
+
+
+  let prune_linked_list_index loc mem acc =
+    let lv_linked_list_index = Loc.append_field loc BufferOverrunField.java_linked_list_index in
+    Option.value_map (Mem.find_opt lv_linked_list_index mem) ~default:acc ~f:(fun index_v ->
+        let linked_list_length = Loc.append_field loc BufferOverrunField.java_linked_list_length in
+        Option.value_map (Loc.get_path linked_list_length) ~default:acc
+          ~f:(fun linked_list_length ->
+            let pruned_v =
+              Val.of_itv (Itv.of_normal_path ~unsigned:true linked_list_length)
+              |> Val.prune_binop Le index_v
+            in
+            update_mem_in_prune lv_linked_list_index pruned_v acc ) )
+
+
   let prune_unop : Exp.t -> t -> t =
    fun e ({mem} as astate) ->
     match e with
-    | Exp.Var x -> (
-      match Mem.find_alias x mem with
-      | Some (AliasTarget.Simple lv) ->
-          let v = Mem.find lv mem in
-          let v' = Val.prune_ne_zero v in
-          update_mem_in_prune lv v' astate
-      | Some (AliasTarget.Empty lv) ->
-          let v = Mem.find lv mem in
-          let v' = Val.prune_length_eq_zero v in
-          update_mem_in_prune lv v' astate
-      | Some (AliasTarget.Fgets lv) ->
-          let strlen_loc = Loc.of_c_strlen lv in
-          let v' = Val.prune_ge_one (Mem.find strlen_loc mem) in
-          update_mem_in_prune strlen_loc v' astate
-      | Some (AliasTarget.Nullity lv) ->
-          let v = Mem.find lv mem in
-          let v' = Val.prune_eq_zero v in
-          update_mem_in_prune lv v' astate
-      | Some (AliasTarget.SimplePlusA _) | None ->
-          astate )
-    | Exp.UnOp (Unop.LNot, Exp.Var x, _) -> (
-      match Mem.find_alias x mem with
-      | Some (AliasTarget.Simple lv) ->
-          let v = Mem.find lv mem in
-          let v' = Val.prune_eq_zero v in
-          update_mem_in_prune lv v' astate
-      | Some (AliasTarget.Empty lv) ->
-          let v = Mem.find lv mem in
-          let v' = Val.prune_length_ge_one v in
-          update_mem_in_prune lv v' astate
-      | Some (AliasTarget.Nullity lv) ->
-          let v = Mem.find lv mem in
-          let itv_v = Itv.prune_comp Binop.Ge (Val.get_itv v) Itv.one in
-          let v' = Val.modify_itv itv_v v in
-          update_mem_in_prune lv v' astate
-      | Some (AliasTarget.SimplePlusA _ | AliasTarget.Fgets _) | None ->
-          astate )
+    | Exp.Var x ->
+        let accum_prune_var rhs tgt acc =
+          match tgt with
+          | AliasTarget.Simple {i} when IntLit.iszero i ->
+              (let v = Mem.find rhs mem in
+               if Val.is_bot v then acc
+               else
+                 let v' = Val.prune_ne_zero v in
+                 update_mem_in_prune rhs v' acc )
+              |> prune_linked_list_index rhs mem
+          | AliasTarget.Empty ->
+              let v = Mem.find rhs mem in
+              if Val.is_bot v then acc
+              else
+                let v' = Val.prune_length_eq_zero v in
+                update_mem_in_prune rhs v' acc
+          | AliasTarget.Fgets ->
+              let strlen_loc = Loc.of_c_strlen rhs in
+              let v = Mem.find strlen_loc mem in
+              if Val.is_bot v then acc
+              else
+                let v' = Val.prune_ge_one v in
+                update_mem_in_prune strlen_loc v' acc
+          | AliasTarget.IteratorHasNext _ ->
+              prune_has_next ~true_branch:true rhs acc
+          | _ ->
+              acc
+        in
+        AliasTargets.fold accum_prune_var (Mem.find_alias_id x mem) astate
+    | Exp.UnOp (Unop.LNot, Exp.Var x, _) ->
+        let accum_prune_not_var rhs tgt acc =
+          match tgt with
+          | AliasTarget.Simple {i} when IntLit.iszero i ->
+              let v = Mem.find rhs mem in
+              if Val.is_bot v then acc
+              else
+                let v' = Val.prune_eq_zero v in
+                update_mem_in_prune rhs v' acc
+          | AliasTarget.Empty ->
+              let v = Mem.find rhs mem in
+              if Val.is_bot v then acc
+              else
+                let v' = Val.prune_length_ge_one v in
+                update_mem_in_prune rhs v' acc
+          | AliasTarget.IteratorHasNext _ ->
+              prune_has_next ~true_branch:false rhs acc
+          | _ ->
+              acc
+        in
+        AliasTargets.fold accum_prune_not_var (Mem.find_alias_id x mem) astate
     | _ ->
         astate
 
 
-  let rec prune_binop_left : Typ.IntegerWidths.t -> Exp.t -> t -> t =
-   fun integer_type_widths e ({mem} as astate) ->
+  let gen_prune_alias_functions ~prune_alias_core location integer_type_widths comp x e astate =
+    (* [val_prune_eq] is applied when the alias type is [AliasTarget.Eq]. *)
+    let val_prune_eq =
+      match (comp : Binop.t) with
+      | Lt | Gt | Le | Ge ->
+          Val.prune_binop comp
+      | Eq ->
+          Val.prune_eq
+      | Ne ->
+          Val.prune_ne
+      | _ ->
+          assert false
+    in
+    (* [val_prune_le] is applied when the alias type is [AliasTarget.Le]. *)
+    let val_prune_le =
+      match (comp : Binop.t) with
+      | Lt ->
+          (* when [alias_target <= alias_key < e], prune [alias_target] with [alias_target < e] *)
+          Some (Val.prune_binop comp)
+      | Le | Eq ->
+          (* when [alias_target <= alias_key = e] or [alias_target <= alias_key <= e], prune
+             [alias_target] with [alias_target <= e] *)
+          Some (Val.prune_binop Le)
+      | Ne | Gt | Ge ->
+          (* when [alias_target <= alias_key != e], [alias_target <= alias_key > e] or [alias_target
+             <= alias_key >= e], no prune *)
+          None
+      | _ ->
+          assert false
+    in
+    let make_pruning_exp = PruningExp.make comp in
+    prune_alias_core ~val_prune_eq ~val_prune_le ~make_pruning_exp location integer_type_widths x e
+      astate
+
+
+  let prune_simple_alias =
+    let prune_alias_core ~val_prune_eq ~val_prune_le:_ ~make_pruning_exp _location
+        integer_type_widths x e ({mem} as astate) =
+      List.fold (Mem.find_simple_alias x mem) ~init:astate ~f:(fun acc (lv, i) ->
+          let lhs = Mem.find lv mem in
+          let rhs =
+            let v' = eval integer_type_widths e mem in
+            if IntLit.iszero i then v' else Val.minus_a v' (Val.of_int_lit i)
+          in
+          if Val.is_bot lhs || Val.is_bot rhs then acc
+          else
+            let v = val_prune_eq lhs rhs in
+            let pruning_exp = make_pruning_exp ~lhs ~rhs in
+            update_mem_in_prune lv v ~pruning_exp acc )
+    in
+    gen_prune_alias_functions ~prune_alias_core
+
+
+  let prune_size_alias =
+    let prune_alias_core ~val_prune_eq ~val_prune_le ~make_pruning_exp location integer_type_widths
+        x e ({mem} as astate) =
+      List.fold (Mem.find_size_alias x mem) ~init:astate
+        ~f:(fun astate (alias_typ, lv, i, java_tmp) ->
+          let array_v = Mem.find lv mem in
+          let lhs =
+            Val.get_array_blk array_v |> ArrayBlk.get_size
+            |> Itv.plus (Itv.of_int_lit i)
+            |> Val.of_itv |> Val.set_itv_updated_by_addition
+          in
+          let rhs = eval integer_type_widths e mem in
+          if Val.is_bot lhs || Val.is_bot rhs then astate
+          else
+            let prune_target val_prune astate =
+              let lhs' = val_prune lhs rhs in
+              let array_v' =
+                Val.set_array_length location ~length:(Val.minus_a lhs' (Val.of_int_lit i)) array_v
+              in
+              let pruning_exp = make_pruning_exp ~lhs:lhs' ~rhs in
+              (update_mem_in_prune lv array_v' ~pruning_exp astate, lhs', pruning_exp)
+            in
+            match alias_typ with
+            | AliasTarget.Eq ->
+                let astate, size', pruning_exp = prune_target val_prune_eq astate in
+                Option.value_map java_tmp ~default:astate ~f:(fun java_tmp ->
+                    update_mem_in_prune java_tmp size' ~pruning_exp astate )
+            | AliasTarget.Le ->
+                let astate =
+                  Option.value_map val_prune_le ~default:astate ~f:(fun val_prune_le ->
+                      prune_target val_prune_le astate |> fun (astate, _, _) -> astate )
+                in
+                Option.value_map java_tmp ~default:astate ~f:(fun java_tmp ->
+                    let v = val_prune_eq (Mem.find java_tmp mem) rhs in
+                    let pruning_exp = make_pruning_exp ~lhs:v ~rhs in
+                    update_mem_in_prune java_tmp v ~pruning_exp astate ) )
+    in
+    gen_prune_alias_functions ~prune_alias_core
+
+
+  let rec prune_binop_left : Location.t -> Typ.IntegerWidths.t -> Exp.t -> t -> t =
+   fun location integer_type_widths e astate ->
     match e with
     | Exp.BinOp (comp, Exp.Cast (_, e1), e2) ->
-        prune_binop_left integer_type_widths (Exp.BinOp (comp, e1, e2)) astate
-    | Exp.BinOp ((Binop.Lt as comp), Exp.Var x, e')
-    | Exp.BinOp ((Binop.Gt as comp), Exp.Var x, e')
-    | Exp.BinOp ((Binop.Le as comp), Exp.Var x, e')
-    | Exp.BinOp ((Binop.Ge as comp), Exp.Var x, e') -> (
-      match Mem.find_simple_alias x mem with
-      | Some (lv, opt_i) ->
-          let lhs = Mem.find lv mem in
-          let rhs =
-            let v' = eval integer_type_widths e' mem in
-            Option.value_map opt_i ~default:v' ~f:(fun i -> Val.minus_a v' (Val.of_int_lit i))
-          in
-          let v = Val.prune_comp comp lhs rhs in
-          let pruning_exp = PruningExp.make comp ~lhs ~rhs in
-          update_mem_in_prune lv v ~pruning_exp astate
-      | None ->
-          astate )
-    | Exp.BinOp (Binop.Eq, Exp.Var x, e') -> (
-      match Mem.find_simple_alias x mem with
-      | Some (lv, opt_i) ->
-          let lhs = Mem.find lv mem in
-          let rhs =
-            let v' = eval integer_type_widths e' mem in
-            Option.value_map opt_i ~default:v' ~f:(fun i -> Val.minus_a v' (Val.of_int_lit i))
-          in
-          let v = Val.prune_eq lhs rhs in
-          let pruning_exp = PruningExp.make Binop.Eq ~lhs ~rhs in
-          update_mem_in_prune lv v ~pruning_exp astate
-      | None ->
-          astate )
-    | Exp.BinOp (Binop.Ne, Exp.Var x, e') -> (
-      match Mem.find_simple_alias x mem with
-      | Some (lv, opt_i) ->
-          let lhs = Mem.find lv mem in
-          let rhs =
-            let v' = eval integer_type_widths e' mem in
-            Option.value_map opt_i ~default:v' ~f:(fun i -> Val.minus_a v' (Val.of_int_lit i))
-          in
-          let v = Val.prune_ne lhs rhs in
-          let pruning_exp = PruningExp.make Binop.Ne ~lhs ~rhs in
-          update_mem_in_prune lv v ~pruning_exp astate
-      | None ->
-          astate )
+        prune_binop_left location integer_type_widths (Exp.BinOp (comp, e1, e2)) astate
+    | Exp.BinOp
+        (((Binop.Lt | Binop.Gt | Binop.Le | Binop.Ge | Binop.Eq | Binop.Ne) as comp), Exp.Var x, e')
+      ->
+        astate
+        |> prune_simple_alias location integer_type_widths comp x e'
+        |> prune_size_alias location integer_type_widths comp x e'
     | Exp.BinOp
         ( ((Binop.Lt | Binop.Gt | Binop.Le | Binop.Ge | Binop.Eq | Binop.Ne) as comp)
         , Exp.BinOp (Binop.PlusA t, e1, e2)
@@ -587,55 +751,62 @@ module Prune = struct
            Be careful when you take into account integer overflows in the abstract semantics [eval]
            in the future. *)
         astate
-        |> prune_binop_left integer_type_widths
+        |> prune_binop_left location integer_type_widths
              (Exp.BinOp (comp, e1, Exp.BinOp (Binop.MinusA t, e3, e2)))
-        |> prune_binop_left integer_type_widths
+        |> prune_binop_left location integer_type_widths
              (Exp.BinOp (comp, e2, Exp.BinOp (Binop.MinusA t, e3, e1)))
     | Exp.BinOp
         ( ((Binop.Lt | Binop.Gt | Binop.Le | Binop.Ge | Binop.Eq | Binop.Ne) as comp)
         , Exp.BinOp (Binop.MinusA t, e1, e2)
         , e3 ) ->
         astate
-        |> prune_binop_left integer_type_widths
+        |> prune_binop_left location integer_type_widths
              (Exp.BinOp (comp, e1, Exp.BinOp (Binop.PlusA t, e3, e2)))
-        |> prune_binop_left integer_type_widths
+        |> prune_binop_left location integer_type_widths
              (Exp.BinOp (comp_rev comp, e2, Exp.BinOp (Binop.MinusA t, e1, e3)))
     | _ ->
         astate
 
 
-  let prune_binop_right : Typ.IntegerWidths.t -> Exp.t -> t -> t =
-   fun integer_type_widths e astate ->
+  let prune_binop_right : Location.t -> Typ.IntegerWidths.t -> Exp.t -> t -> t =
+   fun location integer_type_widths e astate ->
     match e with
     | Exp.BinOp (((Binop.Lt | Binop.Gt | Binop.Le | Binop.Ge | Binop.Eq | Binop.Ne) as c), e1, e2)
       ->
-        prune_binop_left integer_type_widths (Exp.BinOp (comp_rev c, e2, e1)) astate
+        prune_binop_left location integer_type_widths (Exp.BinOp (comp_rev c, e2, e1)) astate
     | _ ->
         astate
 
 
-  let is_unreachable_constant : Typ.IntegerWidths.t -> Exp.t -> Mem.t -> bool =
-   fun integer_type_widths e m ->
-    let v = eval integer_type_widths e m in
-    Itv.( <= ) ~lhs:(Val.get_itv v) ~rhs:(Itv.of_int 0)
-    && PowLoc.is_bot (Val.get_pow_loc v)
-    && ArrayBlk.is_bot (Val.get_array_blk v)
-
-
   let prune_unreachable : Typ.IntegerWidths.t -> Exp.t -> t -> t =
    fun integer_type_widths e ({mem} as astate) ->
-    if is_unreachable_constant integer_type_widths e mem || Mem.is_relation_unsat mem then
-      {astate with mem= Mem.bot}
-    else astate
+    match mem with
+    | Mem.(Unreachable | ExcRaised) ->
+        astate
+    | Mem.Reachable _ ->
+        let v = eval integer_type_widths e mem in
+        let itv_v = Val.get_itv v in
+        if
+          Itv.leq ~lhs:itv_v ~rhs:(Itv.of_int 0)
+          && PowLoc.is_bot (Val.get_pow_loc v)
+          && ArrayBlk.is_bot (Val.get_array_blk v)
+        then
+          if Itv.is_bottom itv_v then
+            let () =
+              Logging.d_printfln_escaped "Warning: the condition expression is evaluated to bottom"
+            in
+            astate
+          else {astate with mem= Mem.unreachable}
+        else astate
 
 
-  let rec prune_helper integer_type_widths e astate =
+  let rec prune_helper location integer_type_widths e astate =
     let astate =
       astate
       |> prune_unreachable integer_type_widths e
       |> prune_unop e
-      |> prune_binop_left integer_type_widths e
-      |> prune_binop_right integer_type_widths e
+      |> prune_binop_left location integer_type_widths e
+      |> prune_binop_right location integer_type_widths e
     in
     let is_const_zero x =
       match Exp.ignore_integer_cast x with
@@ -646,154 +817,34 @@ module Prune = struct
     in
     match e with
     | Exp.BinOp (Binop.Ne, e1, e2) when is_const_zero e2 ->
-        prune_helper integer_type_widths e1 astate
+        prune_helper location integer_type_widths e1 astate
     | Exp.BinOp (Binop.Eq, e1, e2) when is_const_zero e2 ->
-        prune_helper integer_type_widths (Exp.UnOp (Unop.LNot, e1, None)) astate
+        prune_helper location integer_type_widths (Exp.UnOp (Unop.LNot, e1, None)) astate
     | Exp.UnOp (Unop.Neg, Exp.Var x, _) ->
-        prune_helper integer_type_widths (Exp.Var x) astate
+        prune_helper location integer_type_widths (Exp.Var x) astate
     | Exp.BinOp (Binop.LAnd, e1, e2) ->
-        astate |> prune_helper integer_type_widths e1 |> prune_helper integer_type_widths e2
+        astate
+        |> prune_helper location integer_type_widths e1
+        |> prune_helper location integer_type_widths e2
     | Exp.UnOp (Unop.LNot, Exp.BinOp (Binop.LOr, e1, e2), t) ->
         astate
-        |> prune_helper integer_type_widths (Exp.UnOp (Unop.LNot, e1, t))
-        |> prune_helper integer_type_widths (Exp.UnOp (Unop.LNot, e2, t))
+        |> prune_helper location integer_type_widths (Exp.UnOp (Unop.LNot, e1, t))
+        |> prune_helper location integer_type_widths (Exp.UnOp (Unop.LNot, e2, t))
     | Exp.UnOp (Unop.LNot, Exp.BinOp ((Binop.Lt as c), e1, e2), _)
     | Exp.UnOp (Unop.LNot, Exp.BinOp ((Binop.Gt as c), e1, e2), _)
     | Exp.UnOp (Unop.LNot, Exp.BinOp ((Binop.Le as c), e1, e2), _)
     | Exp.UnOp (Unop.LNot, Exp.BinOp ((Binop.Ge as c), e1, e2), _)
     | Exp.UnOp (Unop.LNot, Exp.BinOp ((Binop.Eq as c), e1, e2), _)
     | Exp.UnOp (Unop.LNot, Exp.BinOp ((Binop.Ne as c), e1, e2), _) ->
-        prune_helper integer_type_widths (Exp.BinOp (comp_not c, e1, e2)) astate
+        prune_helper location integer_type_widths (Exp.BinOp (comp_not c, e1, e2)) astate
     | _ ->
         astate
 
 
-  let prune : Typ.IntegerWidths.t -> Exp.t -> Mem.t -> Mem.t =
-   fun integer_type_widths e mem ->
+  let prune : Location.t -> Typ.IntegerWidths.t -> Exp.t -> Mem.t -> Mem.t =
+   fun location integer_type_widths e mem ->
     let mem, prune_pairs = Mem.apply_latest_prune e mem in
-    let mem =
-      let constrs = Relation.Constraints.of_exp e ~get_sym_f:(get_sym_f integer_type_widths mem) in
-      Mem.meet_constraints constrs mem
-    in
-    let {mem; prune_pairs} = prune_helper integer_type_widths e {mem; prune_pairs} in
-    if PrunePairs.is_reachable prune_pairs then Mem.set_prune_pairs prune_pairs mem else Mem.bot
+    let {mem; prune_pairs} = prune_helper location integer_type_widths e {mem; prune_pairs} in
+    if PrunePairs.is_reachable prune_pairs then Mem.set_prune_pairs prune_pairs mem
+    else Mem.unreachable
 end
-
-let get_matching_pairs :
-       Tenv.t
-    -> Typ.IntegerWidths.t
-    -> Val.t
-    -> Val.t
-    -> Exp.t option
-    -> Typ.t
-    -> Mem.t
-    -> _ Mem.t0
-    -> (Relation.Var.t * Relation.SymExp.t option) list =
- fun tenv integer_type_widths callee_v actual actual_exp_opt typ caller_mem callee_exit_mem ->
-  let get_offset_sym v = Val.get_offset_sym v in
-  let get_size_sym v = Val.get_size_sym v in
-  let get_field_name (fn, _, _) = fn in
-  let append_field v fn = PowLoc.append_field (Val.get_all_locs v) ~fn in
-  let deref_field v fn mem = Mem.find_set (append_field v fn) mem in
-  let deref_ptr v mem =
-    let array_locs = Val.get_array_locs v in
-    let locs = if PowLoc.is_empty array_locs then Val.get_pow_loc v else array_locs in
-    Mem.find_set locs mem
-  in
-  let add_pair_sym_main_value v1 v2 ~e2_opt l =
-    Option.value_map (Val.get_sym_var v1) ~default:l ~f:(fun var ->
-        let sym_exp_opt =
-          Option.first_some
-            (Relation.SymExp.of_exp_opt
-               ~get_sym_f:(get_sym_f integer_type_widths caller_mem)
-               e2_opt)
-            (Relation.SymExp.of_sym (Val.get_sym v2))
-        in
-        (var, sym_exp_opt) :: l )
-  in
-  let add_pair_sym s1 s2 l =
-    Option.value_map (Relation.Sym.get_var s1) ~default:l ~f:(fun var ->
-        (var, Relation.SymExp.of_sym s2) :: l )
-  in
-  let add_pair_val v1 v2 ~e2_opt rel_pairs =
-    rel_pairs
-    |> add_pair_sym_main_value v1 v2 ~e2_opt
-    |> add_pair_sym (get_offset_sym v1) (get_offset_sym v2)
-    |> add_pair_sym (get_size_sym v1) (get_size_sym v2)
-  in
-  let add_pair_field v1 v2 pairs fn =
-    let v1' = deref_field v1 fn callee_exit_mem in
-    let v2' = deref_field v2 fn caller_mem in
-    add_pair_val v1' v2' ~e2_opt:None pairs
-  in
-  let add_pair_ptr typ v1 v2 pairs =
-    match typ.Typ.desc with
-    | Typ.Tptr ({desc= Tstruct typename}, _) -> (
-      match Tenv.lookup tenv typename with
-      | Some str ->
-          let fns = List.map ~f:get_field_name str.Typ.Struct.fields in
-          List.fold ~f:(add_pair_field v1 v2) ~init:pairs fns
-      | _ ->
-          pairs )
-    | Typ.Tptr (_, _) ->
-        let v1' = deref_ptr v1 callee_exit_mem in
-        let v2' = deref_ptr v2 caller_mem in
-        add_pair_val v1' v2' ~e2_opt:None pairs
-    | _ ->
-        pairs
-  in
-  [] |> add_pair_val callee_v actual ~e2_opt:actual_exp_opt |> add_pair_ptr typ callee_v actual
-
-
-let subst_map_of_rel_pairs :
-    (Relation.Var.t * Relation.SymExp.t option) list -> Relation.SubstMap.t =
- fun pairs ->
-  let add_pair rel_map (x, e) = Relation.SubstMap.add x e rel_map in
-  List.fold pairs ~init:Relation.SubstMap.empty ~f:add_pair
-
-
-let rec list_fold2_def :
-       default:Val.t * Exp.t option
-    -> f:('a -> Val.t * Exp.t option -> 'b -> 'b)
-    -> 'a list
-    -> (Val.t * Exp.t option) list
-    -> init:'b
-    -> 'b =
- fun ~default ~f xs ys ~init:acc ->
-  match (xs, ys) with
-  | [], _ ->
-      acc
-  | x :: xs', [] ->
-      list_fold2_def ~default ~f xs' ys ~init:(f x default acc)
-  | [x], _ :: _ ->
-      let v = List.fold ys ~init:Val.bot ~f:(fun acc (y, _) -> Val.join y acc) in
-      let exp_opt = match ys with [(_, exp_opt)] -> exp_opt | _ -> None in
-      f x (v, exp_opt) acc
-  | x :: xs', y :: ys' ->
-      list_fold2_def ~default ~f xs' ys' ~init:(f x y acc)
-
-
-let get_subst_map :
-       Tenv.t
-    -> Typ.IntegerWidths.t
-    -> (Pvar.t * Typ.t) list
-    -> (Exp.t * 'a) list
-    -> Mem.t
-    -> _ Mem.t0
-    -> Relation.SubstMap.t =
- fun tenv integer_type_widths callee_formals params caller_mem callee_exit_mem ->
-  let add_pair (formal, typ) (actual, actual_exp) rel_l =
-    let callee_v = Mem.find (Loc.of_pvar formal) callee_exit_mem in
-    let new_rel_matching =
-      get_matching_pairs tenv integer_type_widths callee_v actual actual_exp typ caller_mem
-        callee_exit_mem
-    in
-    List.rev_append new_rel_matching rel_l
-  in
-  let actuals =
-    List.map ~f:(fun (a, _) -> (eval integer_type_widths a caller_mem, Some a)) params
-  in
-  let rel_pairs =
-    list_fold2_def ~default:(Val.Itv.top, None) ~f:add_pair callee_formals actuals ~init:[]
-  in
-  subst_map_of_rel_pairs rel_pairs

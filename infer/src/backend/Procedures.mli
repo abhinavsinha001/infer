@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -7,7 +7,7 @@
 
 open! IStd
 
-val get_all : filter:Filtering.procedures_filter -> unit -> Typ.Procname.t list
+val get_all : filter:Filtering.procedures_filter -> unit -> Procname.t list
 
 val pp_all :
      filter:Filtering.procedures_filter
@@ -18,3 +18,5 @@ val pp_all :
   -> Format.formatter
   -> unit
   -> unit
+
+val select_proc_names_interactive : filter:Filtering.procedures_filter -> Procname.t list option

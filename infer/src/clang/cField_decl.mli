@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,7 +9,7 @@ open! IStd
 
 (** Utility module to retrieve fields of structs of classes *)
 
-type field_type = Typ.Fieldname.t * Typ.t * (Annot.t * bool) list
+type field_type = Fieldname.t * Typ.t * (Annot.t * bool) list
 
 val get_fields :
      CAst_utils.qual_type_to_sil_type

@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2015-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -22,7 +22,7 @@ module PathCountDomain = struct
 
   let initial = make_path_count 1
 
-  let ( <= ) ~lhs ~rhs =
+  let leq ~lhs ~rhs =
     match (lhs, rhs) with
     | PathCount c1, PathCount c2 ->
         c1 <= c2
@@ -49,7 +49,7 @@ module PathCountTransferFunctions (CFG : ProcCfg.S) = struct
   module CFG = CFG
   module Domain = PathCountDomain
 
-  type extras = ProcData.no_extras
+  type analysis_data = unit
 
   (* just propagate the current path count *)
   let exec_instr astate _ _ _ = astate
@@ -88,8 +88,7 @@ let tests =
         ; If (unknown_exp, [], [])
         ; invariant "4" ] )
     ; ("loop", [invariant "1"; While (unknown_exp, [invariant "T"]); invariant "T"])
-    ; ( "if_in_loop"
-      , [While (unknown_exp, [If (unknown_exp, [], []); invariant "T"]); invariant "T"] )
+    ; ("if_in_loop", [While (unknown_exp, [If (unknown_exp, [], []); invariant "T"]); invariant "T"])
     ; ( "nested_loop_visit"
       , [ invariant "1"
         ; While (unknown_exp, [invariant "T"; While (unknown_exp, [invariant "T"]); invariant "T"])
@@ -103,7 +102,7 @@ let tests =
             , (* we expect the finally block to be visited *)
               [invariant "1"] )
         ; invariant "1" ] ) ]
-    |> NormalTestInterpreter.create_tests ProcData.empty_extras ~initial
+    |> NormalTestInterpreter.create_tests (fun _summary -> ()) ~initial
   in
   let exceptional_test_list =
     [ ( "try1"
@@ -128,6 +127,6 @@ let tests =
             , (* could arrive here via (1, 2, 3), (1, 4), or (2, 4) *)
               [invariant "3"] )
         ; invariant "3" ] ) ]
-    |> ExceptionalTestInterpreter.create_tests ProcData.empty_extras ~initial
+    |> ExceptionalTestInterpreter.create_tests (fun _summary -> ()) ~initial
   in
   "analyzer_tests_suite" >::: normal_test_list @ exceptional_test_list

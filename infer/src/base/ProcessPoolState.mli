@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -17,3 +17,5 @@ val update_status : (Mtime.t -> string -> unit) ref
 val get_pid : unit -> Pid.t
 
 val reset_pid : unit -> unit
+
+val has_running_children : bool ref

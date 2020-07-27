@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -43,20 +43,34 @@ module MaybeUninitVars = struct
         maybe_uninit_vars
 
 
-  let remove_all_fields tenv base maybe_uninit_vars =
-    match base with
-    | _, {Typ.desc= Tptr ({Typ.desc= Tstruct name_struct}, _)} | _, {Typ.desc= Tstruct name_struct}
-      -> (
-      match Tenv.lookup tenv name_struct with
-      | Some {fields} ->
-          List.fold fields ~init:maybe_uninit_vars ~f:(fun acc (fn, _, _) ->
-              remove
-                (HilExp.AccessExpression.field_offset (HilExp.AccessExpression.base base) fn)
-                acc )
+  let find_access_expr_typ tenv access_expr vars =
+    try HilExp.AccessExpression.get_typ (find access_expr vars) tenv with Caml.Not_found -> None
+
+
+  let remove_all_fields tenv ?(locals = empty) base maybe_uninit_vars =
+    let remove_all_fields_inner base_type =
+      match base_type.Typ.desc with
+      | Typ.Tptr ({Typ.desc= Tstruct name_struct}, _) | Typ.Tstruct name_struct -> (
+        match Tenv.lookup tenv name_struct with
+        | Some {fields} ->
+            List.fold fields ~init:maybe_uninit_vars ~f:(fun acc (fn, _, _) ->
+                remove
+                  (HilExp.AccessExpression.field_offset (HilExp.AccessExpression.base base) fn)
+                  acc )
+        | _ ->
+            maybe_uninit_vars )
       | _ ->
-          maybe_uninit_vars )
-    | _ ->
-        maybe_uninit_vars
+          maybe_uninit_vars
+    in
+    let typ_of_arg_in_locals =
+      match base with
+      | _, {Typ.desc= Tptr _} ->
+          find_access_expr_typ tenv (HilExp.AccessExpression.base base) locals
+      | _ ->
+          None
+    in
+    let typ_to_remove = Option.value ~default:(snd base) typ_of_arg_in_locals in
+    remove_all_fields_inner typ_to_remove
 
 
   let remove_dereference_access base maybe_uninit_vars =
@@ -79,9 +93,10 @@ module MaybeUninitVars = struct
         maybe_uninit_vars
 
 
-  let remove_everything_under tenv access_expr maybe_uninit_vars =
+  let remove_everything_under tenv locals access_expr maybe_uninit_vars =
     let base = HilExp.AccessExpression.get_base access_expr in
-    maybe_uninit_vars |> remove access_expr |> remove_all_fields tenv base
+    maybe_uninit_vars |> remove access_expr
+    |> remove_all_fields tenv ~locals base
     |> remove_all_array_elements base |> remove_dereference_access base
 end
 
@@ -93,14 +108,11 @@ module VarPair = struct
   let pp fmt pair = F.fprintf fmt " (%a, %a)" Var.pp (fst pair) Var.pp (snd pair)
 end
 
-module Record
-    (Domain1 : AbstractDomain.S)
-    (Domain2 : AbstractDomain.S)
-    (Domain3 : AbstractDomain.S) =
+module Record (Domain1 : AbstractDomain.S) (Domain2 : AbstractDomain.S) (Domain3 : AbstractDomain.S) =
 struct
   type t = {maybe_uninit_vars: Domain1.t; aliased_vars: Domain2.t; prepost: Domain3.t prepost}
 
-  let ( <= ) ~lhs ~rhs =
+  let leq ~lhs ~rhs =
     if phys_equal lhs rhs then true
     else
       let {maybe_uninit_vars= lhs_uv; aliased_vars= lhs_av; prepost= {pre= lhs_pre; post= lhs_post}}
@@ -111,10 +123,10 @@ struct
           =
         rhs
       in
-      Domain1.( <= ) ~lhs:lhs_uv ~rhs:rhs_uv
-      && Domain2.( <= ) ~lhs:lhs_av ~rhs:rhs_av
-      && Domain3.( <= ) ~lhs:lhs_pre ~rhs:rhs_pre
-      && Domain3.( <= ) ~lhs:lhs_post ~rhs:rhs_post
+      Domain1.leq ~lhs:lhs_uv ~rhs:rhs_uv
+      && Domain2.leq ~lhs:lhs_av ~rhs:rhs_av
+      && Domain3.leq ~lhs:lhs_pre ~rhs:rhs_pre
+      && Domain3.leq ~lhs:lhs_post ~rhs:rhs_post
 
 
   let join astate1 astate2 =
@@ -158,9 +170,8 @@ end
 
 module Summary = struct
   (* pre = set of parameters initialized inside the procedure;
-    post = set of uninit local variables of the procedure *)
+     post = set of uninit local variables of the procedure *)
   type t = Domain.t prepost
 
-  let pp fmt {pre; post} =
-    F.fprintf fmt "@\n Pre: %a @\nPost: %a @\n" Domain.pp pre Domain.pp post
+  let pp fmt {pre; post} = F.fprintf fmt "@\n Pre: %a @\nPost: %a @\n" Domain.pp pre Domain.pp post
 end

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -539,4 +539,52 @@ void shift_right_zero_Good(int x) {
 void shift_right_zero_Bad(int x) {
   int arr[1];
   arr[1 + (0 >> x)] = 1;
+}
+
+#define INTENDED_INTEGER_UNDERFLOW (0ULL - 2)
+
+void use_intended_integer_underflow_Good() {
+  unsigned long long x = INTENDED_INTEGER_UNDERFLOW;
+}
+
+void ptr_band1_Bad(int x, int* q) {
+  int a[5];
+  int* p;
+  if (x) {
+    p = q;
+  } else {
+    p = 0;
+  }
+  if ((int)p & x) {
+    a[10] = 0;
+  }
+}
+
+void ptr_band2_Bad(int x, int* q) {
+  int a[5];
+  int* p;
+  if (x) {
+    p = q;
+  } else {
+    p = 0;
+  }
+  if ((int)p & x) {
+  }
+  a[10] = 0;
+}
+
+void do_not_prune_float_Good_FP() {
+  int a[5];
+  float f = 0.5;
+  if (f > 1.0 && f < 1.0) {
+    a[10] = 0;
+  }
+}
+
+void do_not_prune_float_Bad() {
+  int a[5];
+  float f = 0.5;
+  if (f > 0.0 && f < 1.0) {
+    a[10] = 0;
+  }
 }

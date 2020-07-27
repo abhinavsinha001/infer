@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2018-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -8,38 +8,33 @@
 (** Expressions
 
     Pure (heap-independent) expressions are complex arithmetic,
-    bitwise-logical, etc. operations over literal values and registers.
+    bitwise-logical, etc. operations over literal values and registers. *)
 
-    Expressions are represented in curried form, where the only† recursive
-    constructor is [App], which is an application of a function symbol to an
-    argument. This is done to simplify the definition of 'subexpression' and
-    make it explicit, which is a significant help for treating equality
-    between expressions using congruence closure. The specific constructor
-    functions indicate and check the expected arity of the function symbols.
+type op1 =
+  | Signed of {bits: int}
+      (** [Ap1 (Signed {bits= n}, dst, arg)] is [arg] interpreted as an
+          [n]-bit signed integer and injected into the [dst] type. That is,
+          it two's-complement--decodes the low [n] bits of the infinite
+          two's-complement encoding of [arg]. The injection into [dst] is a
+          no-op, so [dst] must be an integer type with bitwidth at least
+          [n]. *)
+  | Unsigned of {bits: int}
+      (** [Ap1 (Unsigned {bits= n}, dst, arg)] is [arg] interpreted as an
+          [n]-bit unsigned integer and injected into the [dst] type. That
+          is, it unsigned-binary--decodes the low [n] bits of the infinite
+          two's-complement encoding of [arg]. The injection into [dst] is a
+          no-op, so [dst] must be an integer type with bitwidth greater than
+          [n]. *)
+  | Convert of {src: Typ.t}
+      (** [Ap1 (Convert {src}, dst, arg)] is [arg] converted from type [src]
+          to type [dst], possibly with loss of information. The [src] and
+          [dst] types must be [Typ.convertible] and must not both be
+          [Integer] types. *)
+  | Splat  (** Iterated concatenation of a single byte *)
+  | Select of int  (** Select an index from a record *)
+[@@deriving compare, equal, hash, sexp]
 
-    [†] [Struct_rec] is also a recursive constructor, but its values are
-    treated as atomic since, as they are recursive, doing otherwise would
-    require inductive reasoning. *)
-
-type comparator_witness
-
-type qset = (t, comparator_witness) Qset.t
-
-and t = private
-  | Add of {args: qset; typ: Typ.t}  (** Addition *)
-  | Mul of {args: qset; typ: Typ.t}  (** Multiplication *)
-  | Splat of {byt: t; siz: t}
-      (** Iterated concatenation of a single byte *)
-  | Memory of {siz: t; arr: t}  (** Size-tagged byte-array *)
-  | Concat of {args: t vector}  (** Byte-array concatenation *)
-  | Var of {id: int; name: string}  (** Local variable / virtual register *)
-  | Nondet of {msg: string}
-      (** Anonymous local variable with arbitrary value, representing
-          non-deterministic approximation of value described by [msg] *)
-  | Label of {parent: string; name: string}
-      (** Address of named code block within parent function *)
-  | App of {op: t; arg: t}
-      (** Application of function symbol to argument, curried *)
+type op2 =
   | Eq  (** Equal test *)
   | Dq  (** Disequal test *)
   | Gt  (** Greater-than test *)
@@ -52,9 +47,14 @@ and t = private
   | Ule  (** Unsigned less-than-or-equal test *)
   | Ord  (** Ordered test (neither arg is nan) *)
   | Uno  (** Unordered test (some arg is nan) *)
-  | Div  (** Division *)
+  | Add  (** Addition *)
+  | Sub  (** Subtraction *)
+  | Mul  (** Multiplication *)
+  | Div  (** Division, for integers result is truncated toward zero *)
+  | Rem
+      (** Remainder of division, satisfies [a = b * div a b + rem a b] and
+          for integers [rem a b] has same sign as [a], and [|rem a b| < |b|] *)
   | Udiv  (** Unsigned division *)
-  | Rem  (** Remainder of division *)
   | Urem  (** Remainder of unsigned division *)
   | And  (** Conjunction, boolean or bitwise *)
   | Or  (** Disjunction, boolean or bitwise *)
@@ -62,149 +62,130 @@ and t = private
   | Shl  (** Shift left, bitwise *)
   | Lshr  (** Logical shift right, bitwise *)
   | Ashr  (** Arithmetic shift right, bitwise *)
-  | Conditional  (** If-then-else *)
-  | Record  (** Record (array / struct) constant *)
-  | Select  (** Select an index from a record *)
-  | Update  (** Constant record with updated index *)
-  | Struct_rec of {elts: t vector}
-      (** Struct constant that may recursively refer to itself
-          (transitively) from [elts]. NOTE: represented by cyclic values. *)
-  | Convert of {signed: bool; dst: Typ.t; src: Typ.t}
-      (** Convert between specified types, possibly with loss of information *)
-  | Integer of {data: Z.t; typ: Typ.t}
-      (** Integer constant, or if [typ] is a [Pointer], null pointer value
-          that never refers to an object *)
-  | Float of {data: string}  (** Floating-point constant *)
+  | Update of int  (** Constant record with updated index *)
 [@@deriving compare, equal, hash, sexp]
 
-val comparator : (t, comparator_witness) Comparator.t
+type op3 = Conditional  (** If-then-else *)
+[@@deriving compare, equal, hash, sexp]
 
-type exp = t
+type opN = Record  (** Record (array / struct) constant *)
+[@@deriving compare, equal, hash, sexp]
+
+type t = private
+  | Reg of {name: string; global: bool; typ: Typ.t}  (** Virtual register *)
+  | Label of {parent: string; name: string}
+      (** Address of named code block within parent function *)
+  | Integer of {data: Z.t; typ: Typ.t}  (** Integer constant *)
+  | Float of {data: string; typ: Typ.t}  (** Floating-point constant *)
+  | Ap1 of op1 * Typ.t * t
+  | Ap2 of op2 * Typ.t * t * t
+  | Ap3 of op3 * Typ.t * t * t * t
+  | ApN of opN * Typ.t * t iarray
+  | RecRecord of int * Typ.t  (** Reference to ancestor recursive record *)
+[@@deriving compare, equal, hash, sexp]
 
 val pp : t pp
-val invariant : ?partial:bool -> t -> unit
 
-(** Exp.Var is re-exported as Var *)
-module Var : sig
+include Invariant.S with type t := t
+
+(** Exp.Reg is re-exported as Reg *)
+module Reg : sig
+  type exp := t
   type t = private exp [@@deriving compare, equal, hash, sexp]
-  type var = t
-
-  include Comparator.S with type t := t
 
   module Set : sig
-    type t = (var, comparator_witness) Set.t
-    [@@deriving compare, equal, sexp]
+    include Set.S with type elt := t
 
+    val sexp_of_t : t -> Sexp.t
+    val t_of_sexp : Sexp.t -> t
     val pp : t pp
-    val empty : t
-    val of_list : var list -> t
-    val of_vector : var vector -> t
   end
 
+  module Map : Map.S with type key := t
+
+  val demangle : (string -> string option) ref
   val pp : t pp
   val pp_demangled : t pp
 
   include Invariant.S with type t := t
 
+  val of_ : exp -> t
   val of_exp : exp -> t option
-  val program : string -> t
-  val fresh : string -> wrt:Set.t -> t * Set.t
-  val id : t -> int
+  val program : ?global:unit -> Typ.t -> string -> t
   val name : t -> string
-
-  module Subst : sig
-    type t [@@deriving compare, equal, sexp]
-
-    val pp : t pp
-    val empty : t
-    val freshen : Set.t -> wrt:Set.t -> t
-    val extend : t -> replace:var -> with_:var -> t
-    val invert : t -> t
-    val exclude : t -> Set.t -> t
-    val is_empty : t -> bool
-    val domain : t -> Set.t
-    val range : t -> Set.t
-    val apply_set : t -> Set.t -> Set.t
-    val close_set : t -> Set.t -> Set.t
-  end
+  val typ : t -> Typ.t
+  val is_global : t -> bool
 end
 
 (** Construct *)
 
-val var : Var.t -> t
-val nondet : string -> t
+(* registers *)
+val reg : Reg.t -> t
+
+(* constants *)
 val label : parent:string -> name:string -> t
 val null : t
-val splat : byt:t -> siz:t -> t
-val memory : siz:t -> arr:t -> t
-val concat : t array -> t
 val bool : bool -> t
-val integer : Z.t -> Typ.t -> t
-val rational : Q.t -> Typ.t -> t
-val float : string -> t
-val eq : t -> t -> t
-val dq : t -> t -> t
-val gt : t -> t -> t
-val ge : t -> t -> t
-val lt : t -> t -> t
-val le : t -> t -> t
-val ugt : t -> t -> t
-val uge : t -> t -> t
-val ult : t -> t -> t
-val ule : t -> t -> t
-val ord : t -> t -> t
-val uno : t -> t -> t
-val neg : Typ.t -> t -> t
-val add : Typ.t -> t -> t -> t
-val sub : Typ.t -> t -> t -> t
-val mul : Typ.t -> t -> t -> t
-val div : t -> t -> t
-val udiv : t -> t -> t
-val rem : t -> t -> t
-val urem : t -> t -> t
-val and_ : t -> t -> t
-val or_ : t -> t -> t
-val xor : t -> t -> t
-val not_ : Typ.t -> t -> t
-val shl : t -> t -> t
-val lshr : t -> t -> t
-val ashr : t -> t -> t
-val conditional : cnd:t -> thn:t -> els:t -> t
-val record : t list -> t
-val select : rcd:t -> idx:t -> t
-val update : rcd:t -> elt:t -> idx:t -> t
+val true_ : t
+val false_ : t
+val integer : Typ.t -> Z.t -> t
+val float : Typ.t -> string -> t
 
-val struct_rec :
-     (module Hashtbl.Key with type t = 'id)
-  -> (id:'id -> t lazy_t vector -> t) Staged.t
-(** [struct_rec Id id element_thunks] constructs a possibly-cyclic [Struct]
-    value. Cycles are detected using [Id]. The caller of [struct_rec Id]
-    must ensure that a single unstaging of [struct_rec Id] is used for each
-    complete cyclic value. Also, the caller must ensure that recursive calls
-    to [struct_rec Id] provide [id] values that uniquely identify at least
-    one point on each cycle. Failure to obey these requirements will lead to
-    stack overflow. *)
+(* type conversions *)
+val signed : int -> t -> to_:Typ.t -> t
+val unsigned : int -> t -> to_:Typ.t -> t
+val convert : Typ.t -> to_:Typ.t -> t -> t
 
-val convert : ?signed:bool -> dst:Typ.t -> src:Typ.t -> t -> t
-val size_of : Typ.t -> t option
+(* comparisons *)
+val eq : ?typ:Typ.t -> t -> t -> t
+val dq : ?typ:Typ.t -> t -> t -> t
+val gt : ?typ:Typ.t -> t -> t -> t
+val ge : ?typ:Typ.t -> t -> t -> t
+val lt : ?typ:Typ.t -> t -> t -> t
+val le : ?typ:Typ.t -> t -> t -> t
+val ugt : ?typ:Typ.t -> t -> t -> t
+val uge : ?typ:Typ.t -> t -> t -> t
+val ult : ?typ:Typ.t -> t -> t -> t
+val ule : ?typ:Typ.t -> t -> t -> t
+val ord : ?typ:Typ.t -> t -> t -> t
+val uno : ?typ:Typ.t -> t -> t -> t
 
-(** Access *)
+(* arithmetic *)
+val add : ?typ:Typ.t -> t -> t -> t
+val sub : ?typ:Typ.t -> t -> t -> t
+val mul : ?typ:Typ.t -> t -> t -> t
+val div : ?typ:Typ.t -> t -> t -> t
+val rem : ?typ:Typ.t -> t -> t -> t
+val udiv : ?typ:Typ.t -> t -> t -> t
+val urem : ?typ:Typ.t -> t -> t -> t
 
-val iter : t -> f:(t -> unit) -> unit
-val fold_vars : t -> init:'a -> f:('a -> Var.t -> 'a) -> 'a
-val fold_exps : t -> init:'a -> f:('a -> t -> 'a) -> 'a
-val fold : t -> init:'a -> f:(t -> 'a -> 'a) -> 'a
+(* boolean / bitwise *)
+val and_ : ?typ:Typ.t -> t -> t -> t
+val or_ : ?typ:Typ.t -> t -> t -> t
 
-(** Transform *)
+(* bitwise *)
+val xor : ?typ:Typ.t -> t -> t -> t
+val shl : ?typ:Typ.t -> t -> t -> t
+val lshr : ?typ:Typ.t -> t -> t -> t
+val ashr : ?typ:Typ.t -> t -> t -> t
 
-val map : t -> f:(t -> t) -> t
-val rename : t -> Var.Subst.t -> t
+(* if-then-else *)
+val conditional : ?typ:Typ.t -> cnd:t -> thn:t -> els:t -> t
+
+(* sequences *)
+val splat : Typ.t -> t -> t
+
+(* records (struct / array values) *)
+val record : Typ.t -> t iarray -> t
+val select : Typ.t -> t -> int -> t
+val update : Typ.t -> rcd:t -> int -> elt:t -> t
+val rec_record : int -> Typ.t -> t
+
+(** Traverse *)
+
+val fold_regs : t -> init:'a -> f:('a -> Reg.t -> 'a) -> 'a
 
 (** Query *)
 
-val fv : t -> Var.Set.t
 val is_true : t -> bool
 val is_false : t -> bool
-val typ : t -> Typ.t option
-val classify : t -> [> `Atomic | `Interpreted | `Uninterpreted]
-val solve : t -> t -> (t, t, comparator_witness) Map.t option

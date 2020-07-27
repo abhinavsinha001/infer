@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2016-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -9,6 +9,7 @@ package codetoanalyze.java.checkers;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
 import javax.annotation.concurrent.ThreadSafe;
 import javax.inject.Inject;
 import javax.inject.Provider;
@@ -156,7 +157,7 @@ public class Ownership {
     writeToFormal(o);
   }
 
-  public void writeToNotOwnedInCalleeBad2() {
+  public void FN_writeToNotOwnedInCalleeBad2() {
     Obj o = getMaybeUnownedObj();
     writeToFormal(o);
   }
@@ -338,7 +339,7 @@ public class Ownership {
     castThenCall(o);
   }
 
-  void castThenCallBad() {
+  void FN_castThenCallBad() {
     Obj o = getMaybeUnownedObj();
     castThenCall(o);
   }
@@ -506,7 +507,7 @@ public class Ownership {
     conditionalAlias(new Obj(), new Obj());
   }
 
-  void conditionalAliasBad(Obj unowned) {
+  void FN_conditionalAliasBad(Obj unowned) {
     conditionalAlias(new Obj(), unowned);
   }
 }
@@ -530,5 +531,24 @@ class OtherObj {
 
   void mutateInConstructorOk() {
     new OtherObj(new Obj());
+  }
+}
+
+@ThreadSafe
+class ContainerOwnership {
+
+  ContainerOwnership() {
+    ArrayList<MyObj> children = new ArrayList<MyObj>();
+    setFirstOk(children);
+  }
+
+  private void setFirstOk(ArrayList<MyObj> children) {
+    MyObj obj = children.get(0);
+
+    if (obj == null) {
+      obj = new MyObj();
+    }
+
+    obj.data = 10;
   }
 }

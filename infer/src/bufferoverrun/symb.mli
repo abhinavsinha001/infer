@@ -1,5 +1,5 @@
 (*
- * Copyright (c) 2017-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
@@ -15,21 +15,25 @@ module BoundEnd : sig
 end
 
 module SymbolPath : sig
-  type deref_kind =
-    | Deref_ArrayIndex
-    | Deref_COneValuePointer
-    | Deref_CPointer
-    | Deref_JavaPointer
+  type deref_kind = Deref_ArrayIndex | Deref_COneValuePointer | Deref_CPointer | Deref_JavaPointer
   [@@deriving compare]
 
-  type partial = private
+  type prim =
     | Pvar of Pvar.t
     | Deref of deref_kind * partial
-    | Field of Typ.Fieldname.t * partial
-    | Callsite of {ret_typ: Typ.t; cs: CallSite.t}
+    | Callsite of {ret_typ: Typ.t; cs: CallSite.t; obj_path: partial option [@compare.ignore]}
+        (** [obj_path] represents the varaible name object when a method of which is called at the
+            [cs] callsite. *)
   [@@deriving compare]
 
-  type t = private Normal of partial | Offset of partial | Length of partial | Modeled of partial
+  and partial = prim BufferOverrunField.t [@@deriving compare]
+
+  type t = private
+    | Normal of partial
+    | Offset of {p: partial; is_void: bool}
+    | Length of {p: partial; is_void: bool}
+    | Modeled of {p: partial; is_expensive: bool}
+  [@@deriving equal]
 
   val equal_partial : partial -> partial -> bool
 
@@ -39,23 +43,23 @@ module SymbolPath : sig
 
   val pp_partial_paren : paren:bool -> F.formatter -> partial -> unit
 
-  val pp_pointer : paren:bool -> F.formatter -> partial -> unit
-
   val of_pvar : Pvar.t -> partial
 
-  val of_callsite : ret_typ:Typ.t -> CallSite.t -> partial
+  val of_callsite : ?obj_path:partial -> ret_typ:Typ.t -> CallSite.t -> partial
 
   val deref : deref_kind:deref_kind -> partial -> partial
 
-  val field : partial -> Typ.Fieldname.t -> partial
+  val append_field : ?typ:Typ.t -> partial -> Fieldname.t -> partial
+
+  val append_star_field : partial -> Fieldname.t -> partial
 
   val normal : partial -> t
 
-  val offset : partial -> t
+  val offset : partial -> is_void:bool -> t
 
-  val length : partial -> t
+  val length : partial -> is_void:bool -> t
 
-  val modeled : partial -> t
+  val modeled : partial -> is_expensive:bool -> t
 
   val is_this : partial -> bool
 
@@ -67,7 +71,15 @@ module SymbolPath : sig
 
   val represents_callsite_sound_partial : partial -> bool
 
+  val exists_pvar_partial : f:(Pvar.t -> bool) -> partial -> bool
+
   val exists_str_partial : f:(string -> bool) -> partial -> bool
+
+  val is_void_ptr_path : t -> bool
+
+  val is_cpp_vector_elem : partial -> bool
+
+  val is_global_partial : partial -> bool
 end
 
 module Symbol : sig
@@ -79,6 +91,10 @@ module Symbol : sig
 
   val is_unsigned : t -> bool
 
+  val is_non_int : t -> bool
+
+  val is_global : t -> bool
+
   val pp_mark : markup:bool -> F.formatter -> t -> unit
 
   val equal : t -> t -> bool
@@ -87,13 +103,22 @@ module Symbol : sig
 
   val path : t -> SymbolPath.t
 
-  val assert_bound_end : t -> BoundEnd.t -> unit
+  val check_bound_end : t -> BoundEnd.t -> unit
 
-  val make_onevalue : unsigned:bool -> SymbolPath.t -> t
+  type make_t = unsigned:bool -> ?non_int:bool -> SymbolPath.t -> t
 
-  val make_boundend : BoundEnd.t -> unsigned:bool -> SymbolPath.t -> t
+  val make_onevalue : make_t
+
+  val make_boundend : BoundEnd.t -> make_t
 
   val exists_str : f:(string -> bool) -> t -> bool
+
+  val of_foreign_id : int -> t
+  (** make a symbol out of any type of variables that can be represented by their [int] id *)
+
+  val get_foreign_id_exn : t -> int
+  (** Return the [int] id of the foreign variable represented by the symbol. Will fail if called on
+      a symbol not created with [of_foreign_id]. *)
 end
 
 module SymbolSet : sig

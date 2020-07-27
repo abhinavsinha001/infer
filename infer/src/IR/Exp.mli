@@ -1,17 +1,19 @@
 (*
  * Copyright (c) 2009-2013, Monoidics ltd.
- * Copyright (c) 2013-present, Facebook, Inc.
+ * Copyright (c) Facebook, Inc. and its affiliates.
  *
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  *)
 
-(** The Smallfoot Intermediate Language: Expressions *)
+(** The Smallfoot Intermediate Language: Expressions
+
+    NOTE: For doing substitutionson expressions, there are some functions in [Sil]. *)
 
 open! IStd
 module F = Format
 
-type closure = {name: Typ.Procname.t; captured_vars: (t * Pvar.t * Typ.t) list}
+type closure = {name: Procname.t; captured_vars: (t * Pvar.t * Typ.t * Pvar.capture_mode) list}
 
 (** This records information about a [sizeof(typ)] expression.
 
@@ -35,7 +37,7 @@ and t =
   | Const of Const.t  (** Constants *)
   | Cast of Typ.t * t  (** Type cast *)
   | Lvar of Pvar.t  (** The address of a program variable *)
-  | Lfield of t * Typ.Fieldname.t * Typ.t
+  | Lfield of t * Fieldname.t * Typ.t
       (** A field offset, the type is the surrounding struct type *)
   | Lindex of t * t  (** An array index offset: [exp1\[exp2\]] *)
   | Sizeof of sizeof_data
@@ -60,22 +62,24 @@ val is_this : t -> bool
 
 val is_zero : t -> bool
 
+val is_const : t -> bool
+
 (** {2 Utility Functions for Expressions} *)
 
 val texp_to_typ : Typ.t option -> t -> Typ.t
-(** Turn an expression representing a type into the type it represents
-    If not a sizeof, return the default type if given, otherwise raise an exception *)
+(** Turn an expression representing a type into the type it represents If not a sizeof, return the
+    default type if given, otherwise raise an exception *)
 
 val root_of_lexp : t -> t
 (** Return the root of [lexp]. *)
 
 val get_undefined : bool -> t
-(** Get an expression "undefined", the boolean indicates
-    whether the undefined value goest into the footprint *)
+(** Get an expression "undefined", the boolean indicates whether the undefined value goest into the
+    footprint *)
 
 val pointer_arith : t -> bool
-(** Checks whether an expression denotes a location using pointer arithmetic.
-    Currently, catches array - indexing expressions such as a[i] only. *)
+(** Checks whether an expression denotes a location using pointer arithmetic. Currently, catches
+    array - indexing expressions such as a[i] only. *)
 
 val has_local_addr : t -> bool
 (** returns true if the expression operates on address of local variable *)
@@ -113,6 +117,9 @@ val le : t -> t -> t
 val lt : t -> t -> t
 (** Create expression [e1 < e2] *)
 
+val and_nary : t list -> t
+(** Create expression [e1 && e2 && e3 && ...] *)
+
 val free_vars : t -> Ident.t Sequence.t
 (** all the idents appearing in the expression *)
 
@@ -124,14 +131,33 @@ val ident_mem : t -> Ident.t -> bool
 val program_vars : t -> Pvar.t Sequence.t
 (** all the program variables appearing in the expression *)
 
+val rename_pvars : f:(string -> string) -> t -> t
+(** Rename all Pvars according to the function [f]. WARNING: You want to rename pvars before you
+    combine expressions from different symbolic states, which you RARELY want to.*)
+
 val fold_captured : f:('a -> t -> 'a) -> t -> 'a -> 'a
 (** Fold over the expressions captured by this expression. *)
 
-val pp_printenv : print_types:bool -> Pp.env -> F.formatter -> t -> unit
+val pp_diff : ?print_types:bool -> Pp.env -> F.formatter -> t -> unit
 
 val pp : F.formatter -> t -> unit
 
 val to_string : t -> string
+
+val d_exp : t -> unit
+(** dump an expression. *)
+
+val pp_texp : Pp.env -> F.formatter -> t -> unit
+(** Pretty print a type. *)
+
+val pp_texp_full : Pp.env -> F.formatter -> t -> unit
+(** Pretty print a type with all the details. *)
+
+val d_texp_full : t -> unit
+(** Dump a type expression with all the details. *)
+
+val d_list : t list -> unit
+(** Dump a list of expressions. *)
 
 val is_objc_block_closure : t -> bool
 
@@ -143,3 +169,6 @@ val zero_of_type_exn : Typ.t -> t
 val ignore_cast : t -> t
 
 val ignore_integer_cast : t -> t
+
+val get_java_class_initializer : Tenv.t -> t -> (Procname.t * Pvar.t * Fieldname.t * Typ.t) option
+(** Returns the class initializer of the given expression in Java *)

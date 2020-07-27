@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright (c) 2018-present, Facebook, Inc.
+# Copyright (c) Facebook, Inc. and its affiliates.
 #
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
@@ -7,17 +7,17 @@
 # source this script to import its utility functions
 
 opam_retry () {
-  "$@" || ( \
-    echo >&2; \
-    printf '*** `%s` failed\n' "$*" >&2; \
-    echo '*** Updating opam then retrying' >&2; \
-    opam update && \
-    "$@" || ( \
-      echo >&2; \
-      printf '*** ERROR: `%s` failed\n' "$*" >&2; \
-      exit 1 \
-    ) \
-  )
+  "$@" || {
+    echo >&2;
+    printf '*** `%s` failed\n' "$*" >&2;
+    echo '*** Updating opam then retrying' >&2;
+    opam update &&
+    "$@" || {
+      echo >&2;
+      printf '*** ERROR: `%s` failed\n' "$*" >&2;
+      exit 1
+    }
+  }
 }
 
 opam_failed () {
@@ -50,6 +50,7 @@ opam_require_version_2 () {
 # assumes opam is available and initialized
 opam_switch_create_if_needed () {
     local switch=$1
+    local compiler=$2
     local switch_exists=no
     for installed_switch in $(opam switch list --short); do
         if [ "$installed_switch" == "$switch" ]; then
@@ -57,9 +58,22 @@ opam_switch_create_if_needed () {
             break
         fi
     done
+    opam_root="${OPAMROOT:-}"
     if [ "$switch_exists" = "no" ]; then
-        opam switch create "$switch"
+        if [ -n "$opam_root" ]; then
+            rm -rf "$opam_root/$switch" || true
+        fi
+        opam switch create "$switch" "$compiler"
     fi
 }
 
 opam_require_version_2
+
+# removes packages that cannot be found by ocamlfind
+opam_remove_broken_package () {
+    local pkg="$1"
+    if ! ocamlfind query "${pkg}"; then
+        echo "ocamlfind cannot find ${pkg} package. Removing the package..."
+        opam remove "${pkg}" || true
+    fi
+}
