@@ -1,0 +1,9 @@
+FROM alpine
+RUN apk add sqlite-dev python2 tzdata
+ENV TZ=America/Los_Angeles
+RUN cp -rf /usr/share/zoneinfo/$TZ /etc/localtime
+
+RUN mkdir -p /usr/local/lib/infer
+ADD ./infer.0.17.0-alpine.tar.gz /usr/local/lib/infer/
+ENV PATH=${PATH}:/usr/local/lib/infer/infer/bin
+RUN infer
