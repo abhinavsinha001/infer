@@ -13,7 +13,7 @@ ORIG_SHELL_BUILD_MODE = $(BUILD_MODE)
 # override this for faster builds (but slower infer)
 BUILD_MODE ?= opt
 
-MAKE_SOURCE = $(MAKE) -c $(SRC_DIR) INFER_BUILD_DIR=_build/$(BUILD_MODE)
+MAKE_SOURCE = $(MAKE) -C $(SRC_DIR) INFER_BUILD_DIR=_build/$(BUILD_MODE)
 
 ifneq ($(UTOP),no)
 BUILD_SYSTEMS_TESTS += infertop
@@ -194,7 +194,7 @@ endif
 .PHONY: fb-setup
 fb-setup:
 	$(QUIET)$(call silent_on_success,Facebook setup,\
-	$(MAKE) -c facebook setup)
+	$(MAKE) -C facebook setup)
 
 OCAMLFORMAT_EXE?=ocamlformat
 
@@ -239,7 +239,7 @@ test_build: src_build_common
 .PHONY: real_deadcode
 real_deadcode: src_build_common
 	$(QUIET)$(call silent_on_success,Testing there is no dead OCaml code,\
-	$(MAKE) -c $(SRC_DIR)/deadcode)
+	$(MAKE) -C $(SRC_DIR)/deadcode)
 
 .PHONY: deadcode
 deadcode:
@@ -305,9 +305,9 @@ $(INFER_GROFF_MANUALS_GZIPPED): %.gz: %
 
 infer_models: src_build
 ifeq ($(BUILD_JAVA_ANALYZERS),yes)
-	$(MAKE) -c $(ANNOTATIONS_DIR)
+	$(MAKE) -C $(ANNOTATIONS_DIR)
 endif
-	$(MAKE) -c $(MODELS_DIR) all
+	$(MAKE) -C $(MODELS_DIR) all
 
 .PHONY: infer byte_infer
 infer byte_infer:
@@ -345,7 +345,7 @@ clang_setup:
 .PHONY: clang_plugin
 clang_plugin: clang_setup
 	$(QUIET)$(call silent_on_success,Building clang plugin,\
-	$(MAKE) -c $(FCP_DIR)/libtooling all \
+	$(MAKE) -C $(FCP_DIR)/libtooling all \
 	  CC="$(CC)" CXX="$(CXX)" \
 	  CFLAGS="$(CFLAGS)" CXXFLAGS="$(CXXFLAGS)" \
 	  CPP="$(CPP)" LDFLAGS="$(LDFLAGS)" LIBS="$(LIBS)" \
@@ -353,7 +353,7 @@ clang_plugin: clang_setup
 	  CLANG_PREFIX=$(CLANG_PREFIX) \
 	  CLANG_INCLUDES=$(CLANG_INCLUDES))
 	$(QUIET)$(call silent_on_success,Building clang plugin OCaml interface,\
-	$(MAKE) -c $(FCP_DIR)/clang-ocaml all \
+	$(MAKE) -C $(FCP_DIR)/clang-ocaml all \
           build/clang_ast_proj.ml build/clang_ast_proj.mli \
 	  CC=$(CC) CXX=$(CXX) \
 	  CFLAGS="$(CFLAGS)" CXXFLAGS="$(CXXFLAGS)" \
@@ -365,7 +365,7 @@ clang_plugin: clang_setup
 .PHONY: clang_plugin_test
 clang_plugin_test: clang_setup
 		$(QUIET)$(call silent_on_success,Running facebook-clang-plugins/libtooling/ tests,\
-		$(MAKE) -c $(FCP_DIR)/libtooling test \
+		$(MAKE) -C $(FCP_DIR)/libtooling test \
 		  CC=$(CC) CXX=$(CXX) \
 		  CFLAGS="$(CFLAGS)" CXXFLAGS="$(CXXFLAGS)" \
 		  CPP="$(CPP)" LDFLAGS="$(LDFLAGS)" LIBS="$(LIBS)" \
@@ -373,7 +373,7 @@ clang_plugin_test: clang_setup
 		  CLANG_PREFIX=$(CLANG_PREFIX) \
 		  CLANG_INCLUDES=$(CLANG_INCLUDES))
 		$(QUIET)$(call silent_on_success,Running facebook-clang-plugins/clang-ocaml/ tests,\
-		$(MAKE) -c $(FCP_DIR)/clang-ocaml test \
+		$(MAKE) -C $(FCP_DIR)/clang-ocaml test \
 		  CC=$(CC) CXX=$(CXX) \
 		  CFLAGS="$(CFLAGS)" CXXFLAGS="$(CXXFLAGS)" \
 		  CPP="$(CPP)" LDFLAGS="$(LDFLAGS)" LIBS="$(LIBS)" \
@@ -384,7 +384,7 @@ clang_plugin_test: clang_setup
 .PHONY: clang_plugin_test
 clang_plugin_test_replace: clang_setup
 		$(QUIET)$(call silent_on_success,Running facebook-clang-plugins/libtooling/ record tests,\
-		$(MAKE) -c $(FCP_DIR)/libtooling record-test-outputs \
+		$(MAKE) -C $(FCP_DIR)/libtooling record-test-outputs \
 		  CC=$(CC) CXX=$(CXX) \
 		  CFLAGS="$(CFLAGS)" CXXFLAGS="$(CXXFLAGS)" \
 		  CPP="$(CPP)" LDFLAGS="$(LDFLAGS)" LIBS="$(LIBS)" \
@@ -392,7 +392,7 @@ clang_plugin_test_replace: clang_setup
 		  CLANG_PREFIX=$(CLANG_PREFIX) \
 		  CLANG_INCLUDES=$(CLANG_INCLUDES))
 		$(QUIET)$(call silent_on_success,Running facebook-clang-plugins/clang-ocaml/ record tests,\
-		$(MAKE) -c $(FCP_DIR)/clang-ocaml record-test-outputs \
+		$(MAKE) -C $(FCP_DIR)/clang-ocaml record-test-outputs \
 		  CC=$(CC) CXX=$(CXX) \
 		  CFLAGS="$(CFLAGS)" CXXFLAGS="$(CXXFLAGS)" \
 		  CPP="$(CPP)" LDFLAGS="$(LDFLAGS)" LIBS="$(LIBS)" \
@@ -414,7 +414,7 @@ endef
 $(DIRECT_TESTS:%=direct_%_test): infer
 	$(QUIET)$(call silent_on_success,Running test: $(subst _, ,$@),\
 	$(call silence_make,\
-	$(MAKE) -c \
+	$(MAKE) -C \
 	  $(INFER_DIR)/tests/codetoanalyze/$(shell printf $@ | cut -f 2 -d _)/$(shell printf $@ | cut -f 3 -d _) \
 	  test))
 
@@ -422,7 +422,7 @@ $(DIRECT_TESTS:%=direct_%_test): infer
 $(DIRECT_TESTS:%=direct_%_print): infer
 	$(QUIET)$(call silent_on_success,Running: $(subst _, ,$@),\
 	$(call silence_make,\
-	$(MAKE) -c \
+	$(MAKE) -C \
 	  $(INFER_DIR)/tests/codetoanalyze/$(shell printf $@ | cut -f 2 -d _)/$(shell printf $@ | cut -f 3 -d _) \
 	  print))
 
@@ -430,7 +430,7 @@ $(DIRECT_TESTS:%=direct_%_print): infer
 $(DIRECT_TESTS:%=direct_%_clean):
 	$(QUIET)$(call silent_on_success,Cleaning: $(subst _, ,$@),\
 	$(call silence_make,\
-	$(MAKE) -c \
+	$(MAKE) -C \
 	  $(INFER_DIR)/tests/codetoanalyze/$(shell printf $@ | cut -f 2 -d _)/$(shell printf $@ | cut -f 3 -d _) \
 	  clean))
 
@@ -438,7 +438,7 @@ $(DIRECT_TESTS:%=direct_%_clean):
 $(DIRECT_TESTS:%=direct_%_replace): infer
 	$(QUIET)$(call silent_on_success,Recording: $(subst _, ,$@),\
 	$(call silence_make,\
-	$(MAKE) -c \
+	$(MAKE) -C \
 	  $(INFER_DIR)/tests/codetoanalyze/$(shell printf $@ | cut -f 2 -d _)/$(shell printf $@ | cut -f 3 -d _) \
 	  replace))
 
@@ -449,25 +449,25 @@ direct_tests: $(DIRECT_TESTS:%=direct_%_test)
 $(BUILD_SYSTEMS_TESTS:%=build_%_test): infer
 	$(QUIET)$(call silent_on_success,Running test: $(subst _, ,$@),\
 	$(call silence_make,\
-	$(MAKE) -c $(INFER_DIR)/tests/build_systems/$(patsubst build_%_test,%,$@) test))
+	$(MAKE) -C $(INFER_DIR)/tests/build_systems/$(patsubst build_%_test,%,$@) test))
 
 .PHONY: $(BUILD_SYSTEMS_TESTS:%=build_%_print)
 $(BUILD_SYSTEMS_TESTS:%=build_%_print): infer
 	$(QUIET)$(call silent_on_success,Running: $(subst _, ,$@),\
 	$(call silence_make,\
-	$(MAKE) -c $(INFER_DIR)/tests/build_systems/$(patsubst build_%_print,%,$@) print))
+	$(MAKE) -C $(INFER_DIR)/tests/build_systems/$(patsubst build_%_print,%,$@) print))
 
 .PHONY: $(BUILD_SYSTEMS_TESTS:%=build_%_clean)
 $(BUILD_SYSTEMS_TESTS:%=build_%_clean):
 	$(QUIET)$(call silent_on_success,Cleaning: $(subst _, ,$@),\
 	$(call silence_make,\
-	$(MAKE) -c $(INFER_DIR)/tests/build_systems/$(patsubst build_%_clean,%,$@) clean))
+	$(MAKE) -C $(INFER_DIR)/tests/build_systems/$(patsubst build_%_clean,%,$@) clean))
 
 .PHONY: $(BUILD_SYSTEMS_TESTS:%=build_%_replace)
 $(BUILD_SYSTEMS_TESTS:%=build_%_replace): infer
 	$(QUIET)$(call silent_on_success,Recording: $(subst _, ,$@),\
 	$(call silence_make,\
-	$(MAKE) -c $(INFER_DIR)/tests/build_systems/$(patsubst build_%_replace,%,$@) replace))
+	$(MAKE) -C $(INFER_DIR)/tests/build_systems/$(patsubst build_%_replace,%,$@) replace))
 
 build_infertop_print build_infertop_test build_infertop_replace: toplevel_test
 
@@ -485,13 +485,13 @@ check_missing_mli:
 .PHONY: checkCopyright
 checkCopyright: src_build_common
 	$(QUIET)$(call silent_on_success,Building checkCopyright,\
-	$(MAKE) -c $(SRC_DIR) checkCopyright)
+	$(MAKE) -C $(SRC_DIR) checkCopyright)
 
 .PHONY: validate-skel
 validate-skel:
 ifeq ($(IS_FACEBOOK_TREE),yes)
 	$(QUIET)$(call silent_on_success,Validating facebook/,\
-	$(MAKE) -c facebook validate)
+	$(MAKE) -C facebook validate)
 endif
 
 .PHONY: crash_if_not_all_analyzers_enabled
@@ -520,7 +520,7 @@ endif
 .PHONY: mod_dep
 mod_dep: src_build_common
 	$(QUIET)$(call silent_on_success,Building Infer source dependency graph,\
-	$(MAKE) -c $(SRC_DIR) mod_dep.dot)
+	$(MAKE) -C $(SRC_DIR) mod_dep.dot)
 
 .PHONY: config_tests
 config_tests: test_build ocaml_unit_test endtoend_test checkCopyright validate-skel mod_dep
@@ -551,7 +551,7 @@ uninstall:
 	$(REMOVE) $(foreach manual,$(INFER_GROFF_MANUALS_GZIPPED),\
 	  $(DESTDIR)$(mandir)/man1/$(notdir $(manual)))
 ifeq ($(IS_FACEBOOK_TREE),yes)
-	$(MAKE) -c facebook uninstall
+	$(MAKE) -C facebook uninstall
 endif
 
 .PHONY: test_clean
@@ -656,14 +656,14 @@ ifeq ($(IS_FACEBOOK_TREE),yes)
 ifdef DESTDIR
 ifeq (,$(findstring :/,:$(DESTDIR)))
 #	DESTDIR is set and relative
-	$(MAKE) -c facebook install 'DESTDIR=../$(DESTDIR)'
+	$(MAKE) -C facebook install 'DESTDIR=../$(DESTDIR)'
 else
 #	DESTDIR is set and absolute
-	$(MAKE) -c facebook install
+	$(MAKE) -C facebook install
 endif
 else
 #	DESTDIR not set
-	$(MAKE) -c facebook install
+	$(MAKE) -C facebook install
 endif
 endif
 
@@ -739,26 +739,26 @@ endif
 ocaml_clean:
 ifeq ($(BUILD_C_ANALYZERS),yes)
 	$(QUIET)$(call silent_on_success,Cleaning facebook-clang-plugins OCaml build,\
-	$(MAKE) -c $(FCP_DIR)/clang-ocaml clean)
+	$(MAKE) -C $(FCP_DIR)/clang-ocaml clean)
 endif
 	$(QUIET)$(call silent_on_success,Cleaning infer OCaml build,\
-	$(MAKE) -c $(SRC_DIR) clean)
+	$(MAKE) -C $(SRC_DIR) clean)
 	$(QUIET)$(call silent_on_success,Cleaning ocamldot,\
-	$(MAKE) -c $(DEPENDENCIES_DIR)/ocamldot clean)
+	$(MAKE) -C $(DEPENDENCIES_DIR)/ocamldot clean)
 
 .PHONY: clean
 clean: ocaml_clean test_clean
 ifeq ($(BUILD_C_ANALYZERS),yes)
 	$(QUIET)$(call silent_on_success,Cleaning facebook-clang-plugins C++ build,\
-	$(MAKE) -c $(FCP_DIR) clean)
+	$(MAKE) -C $(FCP_DIR) clean)
 endif
 	$(QUIET)$(call silent_on_success,Cleaning Java annotations,\
-	$(MAKE) -c $(ANNOTATIONS_DIR) clean)
+	$(MAKE) -C $(ANNOTATIONS_DIR) clean)
 	$(QUIET)$(call silent_on_success,Cleaning infer models,\
-	$(MAKE) -c $(MODELS_DIR) clean)
+	$(MAKE) -C $(MODELS_DIR) clean)
 ifeq ($(IS_FACEBOOK_TREE),yes)
 	$(QUIET)$(call silent_on_success,Cleaning facebook/,\
-	$(MAKE) -c facebook clean)
+	$(MAKE) -C facebook clean)
 endif
 	$(QUIET)$(call silent_on_success,Removing *.o and *.o.sh,\
 	find $(INFER_DIR)/tests \( -name '*.o' -o -name '*.o.sh' \) -delete)
